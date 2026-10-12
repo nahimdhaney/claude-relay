@@ -76,7 +76,8 @@ is its synchronization source); otherwise, it modifies each profile's
 
 Installation adds groups to `UserPromptSubmit`, `PostToolUse` and `StopFailure`
 (without a matcher), preserves unrelated hooks, and wraps the previous
-statusline. Reinstalling migrates the old `rate_limit` matcher without
+statusline without `refreshInterval`. Reinstalling removes relay's old
+`refreshInterval:60` and migrates the old `rate_limit` matcher without
 duplicating groups or changing unrelated hooks' matchers. Before each write,
 it creates `settings.json.relay-backup-<date>.<suffix>` and validates the new
 JSON before replacing the file atomically. `--dry-run` shows the changes
@@ -101,8 +102,10 @@ current profile by comparing the resolved path of `CLAUDE_CONFIG_DIR`
 profile.
 
 The score is the higher usage percentage of the 5-hour and 7-day windows.
-A window whose reset time has passed counts as 0 and is marked "reset".
-Without any valid windows, the default score is 50. `pick` selects the lowest
+A window whose reset time has passed is ignored. Across fresh session
+captures, each window uses the latest reset time, then the highest usage
+percentage on a tie. If none are fresh, relay uses the newest capture alone.
+Without any active windows, the default score is 50. `pick` selects the lowest
 score, excludes profiles with missing directories or scores of 97 or higher,
 and breaks ties by pool order. If there are no candidates, it returns exit
 code 3. Explicit profile selection allows a manual choice even when the
@@ -199,12 +202,14 @@ warn_at=90
 handoff_at=97
 unknown_score=50
 exhausted_ttl=3600
+capture_max_age=21600
 wrapped_statusline=printf 'my statusline'
 ```
 
 `CLAUDE_RELAY_WARN_AT`, `CLAUDE_RELAY_HANDOFF_AT` and
-`CLAUDE_RELAY_EXHAUSTED_TTL` take precedence over their corresponding keys.
-The TTL is a positive integer in seconds. Percentages must be between 0 and
+`CLAUDE_RELAY_EXHAUSTED_TTL`, plus `CLAUDE_RELAY_CAPTURE_MAX_AGE`, take
+precedence over their corresponding keys. The TTL and maximum capture age
+are positive integers in seconds. Percentages must be between 0 and
 100, with `warn_at <= handoff_at`. The previous statusline receives exactly
 the same JSON on stdin, and its output is appended with ` │ ` as the separator.
 Its command runs through Bash as local configuration code. If it fails, relay's
@@ -212,7 +217,12 @@ statusline produces no output either.
 
 State is stored under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
 
-- `usage/<profile>.json`: the last measurement received.
+- `usage/<profile>/<session_id>.json`: each session's last changed quota
+  capture, containing `profile`, `session_id`, `model` (input `.model.id`, or
+  `null`), `captured_at` and `rate_limits`. Captures older than seven days are
+  pruned when the statusline writes.
+- `usage/<profile>.json`: a compatibility copy of the newest capture. Relay
+  reads it only when no per-session captures exist for that profile.
 - `exhausted/<profile>.json`: `{profile, at, until, source}`; epoch timestamps,
   with source `manual` or `stop-failure`. While `until > now`, `status --json`
   exposes `score:100`, `exhausted:true` and `exhausted_until`; it does not invent
@@ -278,6 +288,13 @@ Observed in live tests on **2026-10-12**, with **Claude Code 2.1.296**:
 
 - **Team seats do receive `rate_limits`**, but only `five_hour`, without
   `seven_day`.
+- With `refreshInterval:60`, idle sessions repeat quota data that may be
+  hours old; Claude Code drops `five_hour` after its reset time, often leaving
+  only `seven_day`. Relay now installs without that refresh interval, and
+  reinstalling migrates existing relay statuslines.
+- Two live sessions on the same account reported weekly usage of **14% and
+  2% for the same reset time**. This is unexplained. A per-model weekly bucket
+  may account for it, but that has not been confirmed.
 - With `claude -p`, the statusline **does not run**, so relay does not measure
   headless usage, including the subagent's usage.
 - An account already at its limit never gets a successful response and
@@ -294,6 +311,14 @@ Other limitations:
 - Input without `rate_limits` does not erase a previous valid measurement.
   Check its age: another session, another machine or an account switch within
   the same directory can leave it stale. There is no network quota polling.
+- Sessions in the same profile have separate captures. An unchanged
+  `rate_limits` payload never refreshes `captured_at`, even on an idle render.
+  Relay considers captures up to `capture_max_age` old (default six hours),
+  choosing each unexpired window by latest reset time and then highest usage.
+  This is intentionally conservative when sessions disagree. If all captures
+  are stale, it uses only the newest one, still ignoring expired windows.
+  `status --json` exposes `capture_count` and each selected window's
+  `session_id` and `model`; its age is that of the newest considered capture.
 - It is still unconfirmed whether "You've hit your session limit · resets
   2:10pm" reaches `StopFailure`. Relay installs it without a matcher to observe
   events in `events.log`; if the error does not arrive, use `exhausted` manually.

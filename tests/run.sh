@@ -7,7 +7,7 @@ trap 'rm -rf "$SANDBOX"' EXIT
 export HOME="$SANDBOX/home" XDG_CONFIG_HOME="$SANDBOX/config" XDG_STATE_HOME="$SANDBOX/state"
 export XDG_CACHE_HOME="$SANDBOX/cache" XDG_DATA_HOME="$SANDBOX/data" XDG_RUNTIME_DIR="$SANDBOX/runtime" TMPDIR="$SANDBOX/tmp"
 export CLAUDE_PROFILES_ROOT="$SANDBOX/profiles" CLAUDE_CONFIG_DIR="$SANDBOX/profiles/a"
-unset CLAUDE_RELAY_WARN_AT CLAUDE_RELAY_HANDOFF_AT CLAUDE_RELAY_EXHAUSTED_TTL BASH_ENV ENV || true
+unset CLAUDE_RELAY_WARN_AT CLAUDE_RELAY_HANDOFF_AT CLAUDE_RELAY_EXHAUSTED_TTL CLAUDE_RELAY_CAPTURE_MAX_AGE BASH_ENV ENV || true
 mkdir -p "$HOME" "$XDG_CONFIG_HOME/claude-relay" "$XDG_STATE_HOME" "$TMPDIR" "$SANDBOX/fake" "$CLAUDE_PROFILES_ROOT/a" "$CLAUDE_PROFILES_ROOT/b" "$CLAUDE_PROFILES_ROOT/c" "$SANDBOX/project space"
 export PATH="$SANDBOX/fake:$PATH" CLAUDE_RELAY_CLAUDE_BIN="$SANDBOX/fake/claude" FAKE_LOG="$SANDBOX/launch.json"
 # Shebangs and child shells use the same Bash as this suite (including 3.2).
@@ -35,6 +35,8 @@ json_is() { jq -e "$2" "$1" > /dev/null; }
 equals() { [ "$1" = "$2" ]; }
 write_pool() { printf 'a\t%s\nb\t%s\nc\t%s\n' "$CLAUDE_PROFILES_ROOT/a" "$CLAUDE_PROFILES_ROOT/b" "$CLAUDE_PROFILES_ROOT/c" > "$XDG_CONFIG_HOME/claude-relay/pool"; }
 usage() {
+  # This helper intentionally creates legacy-only state.
+  rm -rf "$XDG_STATE_HOME/claude-relay/usage/$1"
   mkdir -p "$XDG_STATE_HOME/claude-relay/usage"
   jq -n --arg p "$1" --argjson n "$2" --argjson reset "${3:-4102444800}" '{profile:$p,captured_at:now,session_id:"other-session",rate_limits:{five_hour:{used_percentage:$n,resets_at:$reset}}}' > "$XDG_STATE_HOME/claude-relay/usage/$1.json"
 }
@@ -62,9 +64,9 @@ usage a 80; usage b 20
 check equals "$(relay pick)" b
 check equals "$(relay pick --exclude b)" c
 usage a 99 1
-check equals "$(relay pick)" a
+check equals "$(relay pick)" b
 relay status --json > "$SANDBOX/status"
-check json_is "$SANDBOX/status" '.[0].score==0 and .[0].current==true and .[2].score==50'
+check json_is "$SANDBOX/status" '.[0].score==50 and .[0].known==false and .[0].five_hour==null and .[0].current==true and .[2].score==50'
 relay status > "$SANDBOX/status-table"
 check test -s "$SANDBOX/status-table"
 usage a 20
@@ -298,6 +300,8 @@ relay install --profiles a,b --settings "$SETTINGS" > "$SANDBOX/install" 2> "$SA
 check json_is "$XDG_CONFIG_HOME/claude-relay/installed-settings.json" 'all(.[]; (.statusLine.command // "" | contains("claude-relay")) | not)'
 # shellcheck source=tests/round2.sh
 source "$ROOT/tests/round2.sh"
+# shellcheck source=tests/round4.sh
+source "$ROOT/tests/round4.sh"
 # Report timings for the common, non-warning path without imposing a flaky CI limit.
 usage a 20
 for operation in statusline guard; do

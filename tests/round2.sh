@@ -6,6 +6,7 @@ STATE="$XDG_STATE_HOME/claude-relay"
 MARKER="$STATE/exhausted/a.json"
 rm -rf "$STATE/exhausted"
 rm -f "$STATE/usage/a.json"
+rm -rf "$STATE/usage/a"
 usage b 60; usage c 70
 check relay exhausted a
 check json_is "$MARKER" '.profile=="a" and .source=="manual" and .until-.at==3600'

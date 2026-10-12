@@ -1,4 +1,67 @@
 #!/usr/bin/env bash
+# Serialize capture updates so concurrent renders cannot regress the legacy
+# copy or race pruning. Bound contention; the safe worker stays fail-open.
+store_capture() (
+  # Command substitutions otherwise disable errexit in Bash, including 3.2.
+  set -e
+  local data=$1 sid target previous newest file lock owner pid present prune cleanup attempts=0
+  sid=$(printf '%s' "$data" | jq -er '.session_id | select(type=="string")')
+  safe_name "$sid" || return 1
+  mkdir -p "$STATE_DIR/usage/$CURRENT_PROFILE"
+  lock="$STATE_DIR/usage/.capture-lock"
+  until mkdir "$lock" 2>/dev/null; do
+    present=false
+    for owner in "$lock/"*; do
+      [ -f "$owner" ] || continue
+      present=true
+      pid=${owner##*/}
+      case "$pid" in ''|*[!0-9]*) continue ;; esac
+      if ! kill -0 "$pid" 2>/dev/null; then
+        # Only the process that removes this particular dead owner's file
+        # may remove its directory; competing waiters must retry acquisition.
+        if rm "$owner" 2>/dev/null; then rmdir "$lock" 2>/dev/null || true; fi
+      fi
+    done
+    # Allow an owner a retry to publish its PID after mkdir. An empty lock
+    # left by interruption before that point can then be removed safely.
+    if ! $present && [ "$attempts" -gt 0 ]; then rmdir "$lock" 2>/dev/null || true; fi
+    attempts=$((attempts+1))
+    [ "$attempts" -lt 4 ] || return 1
+    if [ -d "$lock" ]; then sleep 1; fi
+  done
+  # Bash 3.2 can discard locals before an errexit EXIT trap. Bake in quoted
+  # paths while they are still in scope, including spaces and shell syntax.
+  printf -v cleanup 'rm -f %q; rmdir %q' "$lock/$$" "$lock"
+  trap "$cleanup" EXIT
+  trap 'exit 1' HUP INT TERM
+  : > "$lock/$$"
+  target="$STATE_DIR/usage/$CURRENT_PROFILE/$sid.json"
+  if [ -f "$target" ]; then
+    previous=$(jq -ce 'select(type=="object" and (.captured_at|type)=="number")' "$target" 2>/dev/null) || previous='{}'
+    if printf '%s' "$previous" | jq -e --argjson incoming "$data" \
+      '.rate_limits==$incoming.rate_limits or .captured_at>$incoming.captured_at' >/dev/null; then
+      data=$previous
+    else
+      printf '%s' "$data" | atomic_json "$target"
+    fi
+  else
+    printf '%s' "$data" | atomic_json "$target"
+  fi
+  newest=$(captures "$CURRENT_PROFILE" | jq -ce 'map(select((.captured_at|type)=="number")) | max_by([.captured_at,.session_id])')
+  printf '%s' "$newest" | atomic_json "$STATE_DIR/usage/$CURRENT_PROFILE.json"
+  # Only session captures are pruned; never use filesystem dates or touch
+  # legacy state, lock directories, temporary files or unrelated extensions.
+  for file in "$STATE_DIR/usage/"*/*.json; do
+    [ -f "$file" ] || continue
+    # A damaged inactive capture has no trustworthy age. Leave it alone,
+    # just as the measurement reader ignores malformed captures.
+    prune=$(jq -r '(.captured_at|type)=="number" and .captured_at < now-604800' "$file" 2>/dev/null) || continue
+    if [ "$prune" = true ]; then
+      rm -f "$file"
+    fi
+  done
+  printf '%s\n' "$data"
+)
 cmd_statusline() {
   load_pool
   [ -n "$CURRENT_PROFILE" ] || return 0
@@ -13,12 +76,12 @@ cmd_statusline() {
     --arg settings "$(profile_dir "$CURRENT_PROFILE")/settings.json" --argjson receipts "$receipts" --arg wrapped "$WRAPPED_STATUSLINE" '
     include "usage";
     select(type=="object") |
-    {profile:$p,captured_at:now,session_id:(.session_id // ""),rate_limits:(.rate_limits // {})} as $data |
+    {profile:$p,captured_at:now,session_id:(.session_id // ""),model:(.model.id // null),rate_limits:(.rate_limits // {})} as $data |
     ($data|measurement(50)) as $m |
     ($p+" · "+(if $m.known then
       [if $m.five_hour!=null then "5h \($m.five_hour.effective)%" else empty end,
        if $m.seven_day!=null then "7d \($m.seven_day.effective)%" else empty end]|join(" · ") else "no data" end)) as $line |
-    [($data|tojson),($m.known|tostring),$line,
+    [($data|tojson),($data|[valid_window("five_hour"),valid_window("seven_day")]|any(.!=null)|tostring),$line,
      (if $receipts|has($settings) then $receipts[$settings].statusLine.command // "" else $wrapped end)] | .[]')
   # The first three values cannot contain literal newlines. Preserve the rest
   # as the wrapper command, rather than splitting paths or shell syntax.
@@ -28,7 +91,7 @@ cmd_statusline() {
   case "$result" in *$'\n'*) wrapped=${result#*$'\n'} ;; esac
   # Missing windows never erase a previous account measurement.
   if [ "$save" = true ]; then
-    printf '%s' "$data" | atomic_json "$STATE_DIR/usage/$CURRENT_PROFILE.json"
+    data=$(store_capture "$data")
     if [ -f "$STATE_DIR/exhausted/$CURRENT_PROFILE.json" ]; then
       recovered=$(printf '%s' "$data" | jq -r -L "$RELAY_ROOT/lib" --argjson h "$HANDOFF_AT" \
         --slurpfile marker "$STATE_DIR/exhausted/$CURRENT_PROFILE.json" '
@@ -51,18 +114,17 @@ cmd_hook() {
 hook_guard() {
   load_pool
   [ -n "$CURRENT_PROFILE" ] || return 0
-  [ -f "$STATE_DIR/usage/$CURRENT_PROFILE.json" ] || return 0
-  local input sid event cwd transcript plan fields score reset level marker md project stamp context best='' record output
+  local input sid event cwd transcript plan fields score reset level marker md project stamp context best='' record output metrics
+  metrics=$(measurement "$CURRENT_PROFILE")
   input=$(cat)
   # Validate all fields before producing any side effects.
-  plan=$(printf '%s' "$input" | jq -c -L "$RELAY_ROOT/lib" --slurpfile usage "$STATE_DIR/usage/$CURRENT_PROFILE.json" \
+  plan=$(printf '%s' "$input" | jq -c --argjson m "$metrics" \
     --arg w "$WARN_AT" --arg h "$HANDOFF_AT" --arg u "$UNKNOWN_SCORE" '
-    include "usage";
     ([$w,$h,$u]|map(tonumber)) as $cfg |
     if ($cfg|all(.>=0 and .<=100)) and $cfg[0]<=$cfg[1] then . else error("Invalid thresholds") end |
     select(type=="object" and (.session_id|type=="string") and (.cwd|type=="string") and (.transcript_path|type=="string") and
       (.hook_event_name=="UserPromptSubmit" or .hook_event_name=="PostToolUse")) |
-    . as $input | ($usage[0]|measurement($cfg[2])) as $m |
+    . as $input |
     select($m.known and $m.score >= $cfg[0]) |
     $input + {score:$m.score,reset:$m.trigger_reset,level:(if $m.score >= $cfg[1] then "handoff" else "warn" end)}')
   [ -n "$plan" ] || return 0

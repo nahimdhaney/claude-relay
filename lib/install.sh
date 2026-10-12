@@ -117,11 +117,11 @@ cmd_install() {
   # Keep unknown config keys and never source/eval this file.
   if [ -f "$CONFIG_DIR/config" ]; then
     while IFS= read -r entry || [ -n "$entry" ]; do
-      case "$entry" in warn_at=*|handoff_at=*|unknown_score=*|exhausted_ttl=*|wrapped_statusline=*) ;; *) config="$config$entry"$'\n' ;; esac
+      case "$entry" in warn_at=*|handoff_at=*|unknown_score=*|exhausted_ttl=*|capture_max_age=*|wrapped_statusline=*) ;; *) config="$config$entry"$'\n' ;; esac
     done < "$CONFIG_DIR/config"
   fi
   case "$wrapped" in *$'\n'*) die 'The previous statusline contains newlines; it cannot be saved as key=value.' ;; esac
-  config="${config}warn_at=$warn"$'\n'"handoff_at=$handoff"$'\n'"unknown_score=$UNKNOWN_SCORE"$'\n'"exhausted_ttl=$EXHAUSTED_TTL"$'\n'"wrapped_statusline=$wrapped"$'\n'
+  config="${config}warn_at=$warn"$'\n'"handoff_at=$handoff"$'\n'"unknown_score=$UNKNOWN_SCORE"$'\n'"exhausted_ttl=$EXHAUSTED_TTL"$'\n'"capture_max_age=$CAPTURE_MAX_AGE"$'\n'"wrapped_statusline=$wrapped"$'\n'
   if $dry; then
     printf 'Proposed pool:\n%sProposed configuration:\n%s' "$pool" "$config"
     i=0

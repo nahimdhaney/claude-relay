@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
+captures() {
+  local profile=$1 file found=false
+  # The presence of session files disables legacy fallback, even if corrupt.
+  {
+    for file in "$STATE_DIR/usage/$profile/"*.json; do
+      [ -f "$file" ] || continue
+      found=true
+      jq -ce 'select(type=="object")' "$file" 2>/dev/null || true
+    done
+    if ! $found && [ -f "$STATE_DIR/usage/$profile.json" ]; then
+      jq -ce 'select(type=="object")' "$STATE_DIR/usage/$profile.json" 2>/dev/null || true
+    fi
+  } | jq -s .
+}
 measurement() {
-  local data='{}' marker='{}'
-  if [ -f "$STATE_DIR/usage/$1.json" ]; then
-    data=$(jq -ce 'select(type=="object")' "$STATE_DIR/usage/$1.json" 2>/dev/null) || data='{}'
-  fi
+  local data marker='{}'
+  data=$(captures "$1")
   if [ -f "$STATE_DIR/exhausted/$1.json" ]; then
     marker=$(jq -ce 'select(type=="object")' "$STATE_DIR/exhausted/$1.json" 2>/dev/null) || marker='{}'
   fi
-  printf '%s\n' "$data" | jq -c -L "$RELAY_ROOT/lib" --argjson marker "$marker" --argjson unknown "$UNKNOWN_SCORE" '
-    include "usage"; measurement($unknown) |
+  printf '%s\n' "$data" | jq -c -L "$RELAY_ROOT/lib" --argjson marker "$marker" --argjson unknown "$UNKNOWN_SCORE" --arg max_age "$CAPTURE_MAX_AGE" '
+    include "usage"; measurements($unknown;$max_age) |
     if ($marker.until|type)=="number" and $marker.until>now then
       . + {score:100,exhausted:true,exhausted_until:$marker.until}
     else . + {exhausted:false} end'

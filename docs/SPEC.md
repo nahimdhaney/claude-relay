@@ -27,6 +27,15 @@ Live observations from 2026-10-12 with Claude Code 2.1.296 are included below.
   Verified with Team seats: they receive `five_hour`, without `seven_day`.
   No hook receives `rate_limits`, so the statusline saves it to a file.
   The input also includes `session_id`, `transcript_path`, `cwd`, `model`.
+- Multiple sessions in one profile receive independent snapshots. With
+  `refreshInterval:60`, idle sessions re-render their last `rate_limits` each
+  minute, potentially hours later; after `five_hour.resets_at`, Claude Code
+  drops that window and may report only `seven_day`. Relay installs without
+  `refreshInterval` and timestamps only changed per-session quota data.
+- Two live sessions on the same account reported `seven_day.used_percentage`
+  values of **14 and 2 for the same `resets_at`**. The cause is unexplained;
+  a per-model weekly bucket is a hypothesis, not a confirmed explanation.
+  Relay records model IDs and chooses conservatively across sessions.
 - Hook input (JSON on stdin) includes `session_id`, `transcript_path`, `cwd`,
   `hook_event_name`. Hooks inherit the environment, so `CLAUDE_CONFIG_DIR`
   identifies the running profile (defaulting to `~/.claude` when unset).
@@ -81,6 +90,7 @@ agents/relay.md           wrapper subagent (optional at installation)
 install.sh               shortcut: bin/claude-relay install "$@"
 tests/run.sh             pure Bash suite, no extra dependencies
 tests/round2.sh           exhaustion, hook and launch regressions
+tests/round4.sh           multi-session captures and installation migration
 tests/fixtures/           sample JSON (statusline, hooks)
 README.md                in English: purpose, installation, usage, limits, terms
 docs/SPEC.md             this file
@@ -92,10 +102,13 @@ docs/SPEC.md             this file
   `name<TAB>config_dir` line per profile, `#` comments. Order = tie-break priority.
 - Options: `${XDG_CONFIG_HOME:-~/.config}/claude-relay/config` (`key=value`):
   `warn_at=90`, `handoff_at=97`, `unknown_score=50`, `exhausted_ttl=3600`,
-  `wrapped_statusline=<cmd>`. `exhausted_ttl` is a positive integer in seconds.
+  `capture_max_age=21600`, `wrapped_statusline=<cmd>`. Both age and TTL are
+  positive integers in seconds.
   Environment variables `CLAUDE_RELAY_WARN_AT`, `CLAUDE_RELAY_HANDOFF_AT` and
-  `CLAUDE_RELAY_EXHAUSTED_TTL` override their corresponding keys.
+  `CLAUDE_RELAY_EXHAUSTED_TTL`, plus `CLAUDE_RELAY_CAPTURE_MAX_AGE`, override
+  their corresponding keys.
 - State: `${XDG_STATE_HOME:-~/.local/state}/claude-relay/`:
+  `usage/<profile>/<session_id>.json`, the compatibility copy
   `usage/<profile>.json`, `handoffs/<project>/<YYYYmmdd-HHMMSS>-<sid8>.md`,
   `last-handoff.json`, `warned/<profile>-<sid>-<level>-<resets_at>`,
   `exhausted/<profile>.json`, `events.log`.
@@ -104,17 +117,36 @@ docs/SPEC.md             this file
 
 ## Subcommands
 
+### Profile measurement
+
+Read per-session captures when any exist; only fall back to the legacy
+`usage/<profile>.json` when none exist (an empty directory is not a capture).
+Consider captures whose `captured_at >= now - capture_max_age`. If none are
+fresh, use only the newest capture of any age. For each window independently,
+discard windows with `resets_at <= now`; choose the greatest remaining
+`resets_at`, then the highest `used_percentage` on a tie. This conservative
+rule intentionally avoids understating conflicting reports. Do not combine
+an older reset period with the latest period or revive an expired window.
+
+`status --json` exposes `capture_count` (the number of captures considered,
+including captures whose windows have expired), and `session_id` and `model`
+on each selected window. Missing provenance is `null`. `captured_at` and
+`age_seconds` describe the newest considered capture. With no active windows,
+`known` is false, each window is `null`, and the score is `unknown_score`.
+Status, pick and guard use this same measurement. Exhaustion markers override
+its score as below.
+
 `claude-relay status [--json]`
 : Table: profile, account (email · org), 5 h %, 7 d %, each window's reset time
   (local time), data age, score, and `*` marking the current profile. A window
-  whose `resets_at` has passed is shown as 0% ("reset"). With an active exhaustion
+  whose `resets_at` has passed is ignored ("no data"). With an active exhaustion
   mark, show "exhausted until HH:MM" (local time). JSON includes `exhausted:true`,
   `exhausted_until` and `score:100`; without an active mark, it includes
   `exhausted:false` and the normal usage score.
 
 `claude-relay pick [--exclude P]... [--json]`
 : Print the best profile's name. Score = maximum `used_percentage` of active
-  windows (expired = 0); no data = `unknown_score`. Exclude profiles with scores
+  windows; no active windows = `unknown_score`. Exclude profiles with scores
   >= `handoff_at` and profiles whose config_dir does not exist. Lowest score
   wins; ties → pool order. No candidates → exit 3 and a message on stderr.
 
@@ -153,18 +185,31 @@ docs/SPEC.md             this file
   show its path before launching.
 
 `claude-relay statusline`
-: Command for `statusLine`. Read stdin; if `rate_limits` is present and the
-  profile is in the pool, write `usage/<profile>.json` =
-  `{profile, captured_at, session_id, rate_limits}` (atomically). Print a short
-  line: `<profile> · 5h 23% · 7d 41%` (or `no data`). If `wrapped_statusline`
+: Command for `statusLine`. Read stdin; if `rate_limits` contains a valid
+  window and the profile is in the pool, save
+  `usage/<profile>/<session_id>.json` =
+  `{profile, session_id, model, captured_at, rate_limits}` (atomically, mode 600).
+  `model` is the input's `.model.id`, or `null` when absent. Session IDs must
+  satisfy the same safe-name rules as profile names. Only replace a session
+  capture when its parsed `rate_limits` content changes: identical idle
+  renders (even with reordered JSON keys or a different model ID) retain the
+  entire previous capture and its timestamp. Missing/invalid windows do not
+  erase the previous capture. Keep `usage/<profile>.json` as a copy of the
+  newest capture, never the most recent renderer's stale snapshot. Serialize
+  updates with a directory lock and bounded contention; errors remain silent.
+  Prune session captures older than 604800 seconds (7 days), by `captured_at`,
+  across profiles whenever writing. Legacy copies are retained.
+  Print a short line from this session's input:
+  `<profile> · 5h 23% · 7d 41%` (or `no data`). If `wrapped_statusline`
   exists, pass it the same stdin and append its output, separated by ` │ `.
   Never fails. A capture with a valid window, a score below `handoff_at` and
-  `captured_at > marker.at` clears the exhaustion mark. Captures without
+  the persisted `captured_at > marker.at` clears the exhaustion mark. An
+  identical render never makes an older capture eligible. Captures without
   windows, older than or equal to the mark, or with a high score do not clear it.
 
 `claude-relay hook guard`
 : For `UserPromptSubmit` and `PostToolUse`. Read stdin (session_id,
-  transcript_path, cwd, hook_event_name). Read `usage/<current-profile>.json`;
+  transcript_path, cwd, hook_event_name). Aggregate current-profile captures;
   data from another session is still useful (it is the same account).
   Level = score as in `pick`.
   - level >= `warn_at` and not yet warned (mark in `warned/` per profile,
@@ -220,7 +265,10 @@ docs/SPEC.md             this file
     other hooks and their matchers untouched, even if they shared a group
     with relay. If a non-relay `statusLine` already exists, save it in
     `wrapped_statusline` and set
-    `{"type":"command","command":"<path>/claude-relay statusline","refreshInterval":60}`.
+    `{"type":"command","command":"<path>/claude-relay statusline"}`.
+    Reinstall removes a relay statusline's old `refreshInterval:60`
+    idempotently, retaining the receipt for the original statusline. Uninstall
+    restores that original, including its own refresh interval if any.
   - Back up to `settings.json.relay-backup-<ts>` before writing. Validate the
     resulting JSON before `mv`.
   - `--with-agent` copies `agents/relay.md` to `~/.claude/agents/relay.md`.
@@ -257,9 +305,17 @@ Pure Bash with temporary `HOME`, `XDG_*` and config_dirs, and a fake `claude`
 on PATH that records argv, cwd and `CLAUDE_CONFIG_DIR` / authentication variables.
 Minimum cases:
 
-- statusline writes `usage/<profile>.json` with and without `rate_limits`;
+- statusline writes per-session captures and the newest legacy copy when
+  quota data is available; unchanged data retains `captured_at`; missing data
+  preserves captures; old captures are pruned;
   outside the pool it does not write; with `wrapped_statusline` it appends output.
-- pick: lowest score wins; expired window counts as 0; no data = 50; >= 97 is
+- measurement: conflicting sessions choose latest reset then highest usage;
+  fresh captures exclude stale ones; stale-only fallback uses the newest;
+  expired windows are ignored; JSON includes count and window provenance;
+  legacy-only state remains readable; exhaustion still overrides the score.
+- install: no refreshInterval; migration is backed up and idempotent;
+  uninstall restores unrelated original statusline settings.
+- pick: lowest score wins; no active windows = 50; >= 97 is
   excluded; `--exclude`; ties by order; no candidates → exit 3.
 - guard: < 90 no output; 90 → soft warning once per session; 97 → strong warning
   with the handoff path; valid JSON with the correct `hookEventName`;

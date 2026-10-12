@@ -11,7 +11,7 @@ def install($command):
   .hooks.UserPromptSubmit += [{hooks:[{type:"command",command:($command+" hook guard")}]}] |
   .hooks.PostToolUse += [{hooks:[{type:"command",command:($command+" hook guard")}]}] |
   .hooks.StopFailure += [{hooks:[{type:"command",command:($command+" hook stop-failure")}]}] |
-  .statusLine={type:"command",command:($command+" statusline"),refreshInterval:60};
+  .statusLine={type:"command",command:($command+" statusline")};
 def receipt:
   {hadStatusLine:has("statusLine"),statusLine:.statusLine,hadHooks:has("hooks"),
    hookEvents:((.hooks // {})|keys)};
