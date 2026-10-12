@@ -89,8 +89,14 @@ check equals "$(LC_ALL=C ls -l "$DEST" | cut -c1-10)" '-rw-------'
 check test ! "$DEST" -nt "$SOURCE"
 check test ! "$SOURCE" -nt "$DEST"
 relay install --profiles a,b --settings "$SETTINGS6" > "$SANDBOX/out" 2> "$SANDBOX/err"
+chmod 755 "$CLAUDE_PROFILES_ROOT/b" "$CLAUDE_PROFILES_ROOT/b/projects"
 relay doctor > "$SANDBOX/doctor6" 2> "$SANDBOX/err" || true
 check grep -q 'group- or world-accessible' "$SANDBOX/doctor6"
+check equals "$(grep -c 'group- or world-accessible' "$SANDBOX/doctor6")" 1
+# A private profile directory makes its subdirectories unreachable: no warning.
+chmod 700 "$CLAUDE_PROFILES_ROOT/b"
+relay doctor > "$SANDBOX/doctor6b" 2> "$SANDBOX/err" || true
+check test "$(grep -c 'group- or world-accessible' "$SANDBOX/doctor6b")" -eq 0
 relay uninstall > "$SANDBOX/out"
 printf 'warn_at=90\nhandoff_at=97\nunknown_score=50\n' > "$XDG_CONFIG_HOME/claude-relay/config"
 # Forty captures must use a batch read; the CI budget is explicitly overridable.

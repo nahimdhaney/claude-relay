@@ -266,7 +266,7 @@ cmd_uninstall() {
 }
 cmd_doctor() {
   [ "$#" -eq 0 ] || die 'Usage: doctor'
-  local failed=0 i=0 file m jq_version identities
+  local failed=0 i=0 file m jq_version identities open_dirs first_open
   jq_version=$(jq --version)
   printf 'jq: %s\nBash: %s\n' "$jq_version" "$BASH_VERSION"
   if [[ "$jq_version" =~ ^jq-([0-9]+)\.([0-9]+) ]] &&
@@ -282,10 +282,20 @@ cmd_doctor() {
     if [ ! -d "${POOL_DIRS[$i]}" ]; then printf '%s: missing directory\n' "${POOL_NAMES[$i]}"; failed=1; fi
     m=$(measurement "${POOL_NAMES[$i]}")
     printf '%s: %s\n' "${POOL_NAMES[$i]}" "$(printf '%s' "$m" | jq -r 'if .known then "data from \(.age_seconds)s ago" else "no data" end')"
+    # Subdirectories of a private ancestor are unreachable by other users, so
+    # only scan when neither the profile nor its projects directory is private.
     if [ -d "${POOL_DIRS[$i]}/projects" ]; then
-      while IFS= read -r -d '' file; do
-        case "$(file_mode "$file")" in ?00) ;; *) printf 'Warning: group- or world-accessible transcript directory: %s\n' "$file" ;; esac
-      done < <(find "${POOL_DIRS[$i]}/projects" -type d -print0)
+      case "$(file_mode "${POOL_DIRS[$i]}")$(file_mode "${POOL_DIRS[$i]}/projects")" in
+        ?00*|*?00) ;;
+        *)
+          open_dirs=0 first_open=
+          while IFS= read -r -d '' file; do
+            case "$(file_mode "$file")" in ?00) ;; *) open_dirs=$((open_dirs+1)); first_open=${first_open:-$file} ;; esac
+          done < <(find "${POOL_DIRS[$i]}/projects" -type d -print0)
+          if [ "$open_dirs" -gt 0 ]; then
+            printf 'Warning: %s: %s group- or world-accessible transcript directories (first: %s). Run chmod 700 %q.\n' "${POOL_NAMES[$i]}" "$open_dirs" "$first_open" "${POOL_DIRS[$i]}"
+          fi ;;
+      esac
     fi
     i=$((i+1))
   done
