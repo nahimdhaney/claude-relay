@@ -57,7 +57,7 @@ printf '{"session_id":"no-usage"}' | relay statusline > "$SANDBOX/out"
 check test -f "$MARKER"
 jq '.rate_limits.five_hour.used_percentage=97' "$ROOT/tests/fixtures/statusline.json" | relay statusline > "$SANDBOX/out"
 check test -f "$MARKER"
-CLAUDE_RELAY_HANDOFF_AT=40 relay statusline < "$ROOT/tests/fixtures/statusline.json" > "$SANDBOX/out"
+CLAUDE_RELAY_WARN_AT=30 CLAUDE_RELAY_HANDOFF_AT=40 relay statusline < "$ROOT/tests/fixtures/statusline.json" > "$SANDBOX/out"
 check test -f "$MARKER"
 relay statusline < "$ROOT/tests/fixtures/statusline.json" > "$SANDBOX/out"
 check test ! -e "$MARKER"
@@ -120,16 +120,20 @@ guard_input StopFailure | relay hook stop-failure > "$SANDBOX/out" 2> "$SANDBOX/
 check json_is "$STATE/last-handoff.json" '.to=="b" and .session_id=="session-one"'
 check json_is "$NOTIFY_LOG" 'any(.[]; contains("profile b") and contains("resume --last"))'
 touch -t 202001010000 "$DEST"
-cat > "$SANDBOX/fake/cp" <<'COPYFAIL'
+export REAL_CAT=$(command -v cat) COPY_SOURCE="$SOURCE"
+cat > "$SANDBOX/fake/cat" <<'COPYFAIL'
 #!/usr/bin/env bash
-jq -e '.profile=="a" and .until>now' "$XDG_STATE_HOME/claude-relay/exhausted/a.json" > "$COPY_CHECK"
-exit 1
+if [ "${1:-}" = "$COPY_SOURCE" ]; then
+  jq -e '.profile=="a" and .until>now' "$XDG_STATE_HOME/claude-relay/exhausted/a.json" > "$COPY_CHECK"
+  exit 1
+fi
+exec "$REAL_CAT" "$@"
 COPYFAIL
-chmod +x "$SANDBOX/fake/cp"
+chmod +x "$SANDBOX/fake/cat"
 export COPY_CHECK="$SANDBOX/marked-before-copy"
 rm -f "$NOTIFY_LOG" "$STATE/last-handoff.json"
 guard_input StopFailure | relay hook stop-failure > "$SANDBOX/out" 2> "$SANDBOX/err"
-rm "$SANDBOX/fake/cp"
+rm "$SANDBOX/fake/cat"
 check test -s "$COPY_CHECK"
 check test ! -e "$STATE/last-handoff.json"
 check json_is "$NOTIFY_LOG" 'any(.[]; contains("account a exhausted; could not copy the session"))'

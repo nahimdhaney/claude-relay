@@ -35,8 +35,8 @@ jq '.captured_at=now-22000 | .rate_limits.five_hour.resets_at=4102444800' "$STAT
 mv "$SANDBOX/stale" "$STATE/usage/a/active-1.json"
 relay status --json > "$SANDBOX/status"
 check json_is "$SANDBOX/status" '.[0].score==94 and .[0].capture_count==14'
-check equals "$(relay --version)" 'claude-relay 0.2.0'
-check equals "$(cat "$ROOT/VERSION" 2>/dev/null)" 0.2.0
+check equals "$(relay --version)" 'claude-relay 0.2.1'
+check equals "$(cat "$ROOT/VERSION" 2>/dev/null)" 0.2.1
 # run preserves stdin verbatim, without interpolating or adding it to argv.
 cp "$CLAUDE_RELAY_CLAUDE_BIN" "$SANDBOX/fake-original"
 cat >> "$CLAUDE_RELAY_CLAUDE_BIN" <<'STDIN'
@@ -66,16 +66,13 @@ for depth in -1 'x[$(touch SHOULD_NOT_EXIST)]' 1.5 99999999999999999999999999999
   check test "$rc" -ne 0
 done
 CLAUDE_RELAY_DEPTH=99 relay resume --session session-one --to b > "$SANDBOX/out" 2> "$SANDBOX/err"
-check json_is "$FAKE_LOG" '.depth=="1" and .args==["--resume","session-one"]'
+check json_is "$FAKE_LOG" '.depth=="unset" and .args==["--resume","session-one"]'
 check test ! -e "$SANDBOX/SHOULD_NOT_EXIST"
 check test ! -e "$SANDBOX/ALSO_NOT"
-# Exercise the actual forwarding template with a hostile prompt as literal data.
+# Exercise the deterministic forwarder with a hostile task as literal data.
+printf '%s\n' '#!/usr/bin/env bash' 'cp "$SANDBOX/prompt" "$TMPDIR/claude-relay-task.test"' 'chmod 600 "$TMPDIR/claude-relay-task.test" && claude-relay forward --task-file "$TMPDIR/claude-relay-task.test"' > "$SANDBOX/forwarder.sh"
+export SANDBOX
 ln -s "$CLI" "$SANDBOX/fake/claude-relay"
-awk '/^```bash$/{inside=1;next} /^```$/{inside=0} inside' "$ROOT/agents/relay.md" |
-while IFS= read -r line; do
-  if [ "$line" = 'Insert the complete task here as literal text.' ]; then cat "$SANDBOX/prompt"
-  else printf '%s\n' "$line"; fi
-done > "$SANDBOX/forwarder.sh"
 (cd "$SANDBOX" && "$BASH" "$SANDBOX/forwarder.sh") > "$SANDBOX/out" 2> "$SANDBOX/err"
 check cmp -s "$SANDBOX/prompt" "$FAKE_STDIN"
 check json_is "$FAKE_LOG" '.depth=="1" and .args==["-p","--output-format","text","--permission-mode","plan"]'

@@ -259,7 +259,7 @@ check test ! -e "$HOME/.local/bin/claude-relay"
 write_pool
 # Test without desktop notification programs or claude-profile on PATH.
 mkdir -p "$SANDBOX/minimal-bin"
-for utility in bash jq cat dirname basename chmod cp mkdir mktemp mv rm readlink find ln cmp cksum; do
+for utility in bash jq cat dirname basename chmod cp mkdir mktemp mv rm readlink find ln cmp cksum touch ls; do
   ln -s "$(command -v "$utility")" "$SANDBOX/minimal-bin/$utility"
 done
 ln -s "$CLAUDE_RELAY_CLAUDE_BIN" "$SANDBOX/minimal-bin/claude"
@@ -304,6 +304,7 @@ source "$ROOT/tests/exhaustion-and-hooks.sh"
 source "$ROOT/tests/captures-and-migration.sh"
 # shellcheck source=tests/release.sh
 source "$ROOT/tests/release.sh"
+source "$ROOT/tests/security-hardening.sh"
 # Report timings for the common, non-warning path without imposing a flaky CI limit.
 usage a 20
 for operation in statusline guard; do

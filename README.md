@@ -1,7 +1,7 @@
 <!-- Coding agents: read AGENTS.md before installing claude-relay. -->
 ![claude-relay](assets/banner.svg)
 
-Continuity across your own Claude Code accounts, handing off a session before quota runs out.
+Continuity across Claude Code accounts you legitimately hold, with explicit session handoffs.
 
 ## Install
 
@@ -10,12 +10,14 @@ Tell your coding agent: **Install https://github.com/nahimdhaney/claude-relay**
 Or, with Git, Bash 3.2+, jq 1.6+ and Claude Code already signed in:
 
 ```bash
+set -e
 git clone https://github.com/nahimdhaney/claude-relay.git "$HOME/.local/share/claude-relay"
-cd "$HOME/.local/share/claude-relay" && git checkout "$(git tag --sort=-v:refname | head -1)" && ./install.sh --dry-run
-./install.sh
+cd "$HOME/.local/share/claude-relay"
+git checkout v0.2.1
+./install.sh --dry-run
 ```
 
-Review the preview before the last line. Multiple logins require an explicit
+Only after reviewing the preview, run `./install.sh`. Multiple logins require an explicit
 profile choice; see [the usage guide](docs/USAGE.md). Keep the checkout in place,
 add `~/.local/bin` to PATH if prompted, and restart open Claude Code sessions.
 
@@ -55,10 +57,12 @@ Hooks run code from the checkout: keep it somewhere only you can write and pin
 a release tag. See [SECURITY.md](SECURITY.md) and the [full usage guide](docs/USAGE.md)
 for configuration, advanced commands, diagnostics and removal.
 
-Not affiliated with Anthropic. This tool supports continuity and handoff across
-your own accounts. Plan limits assume “ordinary, individual usage”; you are
-responsible for your use and compliance with the applicable terms. This note is
-not legal advice.
+Use this tool for continuity across accounts you legitimately hold. Anthropic's
+[legal and compliance documentation](https://code.claude.com/docs/en/legal-and-compliance)
+says advertised plan limits assume “ordinary, individual usage”. You must comply
+with Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms)
+and [Usage Policy](https://www.anthropic.com/legal/aup), and any other terms
+applicable to your accounts. Not affiliated with Anthropic.
 
 ## License
 

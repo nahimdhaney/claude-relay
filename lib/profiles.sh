@@ -50,20 +50,26 @@ cmd_detect() {
   esac
 }
 captures() {
-  local profile=$1 file found=false
+  local profile=$1 file found=false data files=() count=0
   [ ! -L "$STATE_DIR/usage" ] && [ ! -L "$STATE_DIR/usage/$profile" ] || return 1
-  # The presence of session files disables legacy fallback, even if corrupt.
-  {
-    for file in "$STATE_DIR/usage/$profile/"*.json; do
-      [ -f "$file" ] || continue
-      found=true
-      [ ! -L "$file" ] || continue
+  for file in "$STATE_DIR/usage/$profile/"*.json; do
+    [ -f "$file" ] || continue
+    found=true
+    [ ! -L "$file" ] || continue
+    files[$count]=$file; count=$((count+1))
+  done
+  if ! $found && [ -f "$STATE_DIR/usage/$profile.json" ] && [ ! -L "$STATE_DIR/usage/$profile.json" ]; then
+    files[$count]="$STATE_DIR/usage/$profile.json"; count=$((count+1))
+  fi
+  if [ "$count" -eq 0 ]; then printf '[]\n'; return; fi
+  if data=$(jq -cs 'map(select(type=="object"))' "${files[@]}" 2>/dev/null); then
+    printf '%s\n' "$data"
+  else
+    # One damaged file must not hide the remaining captures.
+    for file in "${files[@]}"; do
       jq -ce 'select(type=="object")' "$file" 2>/dev/null || true
-    done
-    if ! $found && [ -f "$STATE_DIR/usage/$profile.json" ] && [ ! -L "$STATE_DIR/usage/$profile.json" ]; then
-      jq -ce 'select(type=="object")' "$STATE_DIR/usage/$profile.json" 2>/dev/null || true
-    fi
-  } | jq -s .
+    done | jq -s .
+  fi
 }
 measurement() {
   local data marker='{}'
@@ -168,14 +174,17 @@ cmd_pick() {
   if $json; then jq -n --arg p "$PICKED" --arg d "$(profile_dir "$PICKED")" --argjson m "$PICKED_METRICS" '$m+{profile:$p,config_dir:$d}'; else printf '%s\n' "$PICKED"; fi
 }
 launch_claude() {
-  local profile=$1
-  shift
+  local profile=$1 launch_mode=$2
+  shift 2
   CLAUDE_CONFIG_DIR=$(profile_dir "$profile")
   [ -d "$CLAUDE_CONFIG_DIR" ] || die "Directory does not exist: $CLAUDE_CONFIG_DIR"
   export CLAUDE_CONFIG_DIR
-  valid_depth "${CLAUDE_RELAY_DEPTH:-0}" || die 'Invalid CLAUDE_RELAY_DEPTH.'
-  CLAUDE_RELAY_DEPTH=$((10#${CLAUDE_RELAY_DEPTH:-0}+1))
-  export CLAUDE_RELAY_DEPTH
+  if [ "$launch_mode" = interactive ]; then unset CLAUDE_RELAY_DEPTH
+  else
+    valid_depth "${CLAUDE_RELAY_DEPTH:-0}" || die 'Invalid CLAUDE_RELAY_DEPTH.'
+    CLAUDE_RELAY_DEPTH=$((10#${CLAUDE_RELAY_DEPTH:-0}+1))
+    export CLAUDE_RELAY_DEPTH
+  fi
   unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY ANTHROPIC_BASE_URL
   # The relay forwarder intentionally launches a separate Claude process.
   unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION
@@ -201,5 +210,32 @@ cmd_run() {
   local excluded
   for excluded in ${excludes[@]+"${excludes[@]}"}; do [ "$profile" != "$excluded" ] || die "Excluded profile: $profile"; done
   printf 'claude-relay: profile %s\n' "$profile" >&2
-  launch_claude "$profile" "$@"
+  launch_claude "$profile" child "$@"
 }
+
+cmd_forward() (
+  local task='' mode=plan cleanup
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --task-file) need_value "$@"; [ -z "$task" ] || die 'Only one task file is allowed.'; task=$(absolute_path "$2"); shift 2 ;;
+      --write) mode=acceptEdits; shift ;;
+      *) die "Unknown option: $1" ;;
+    esac
+  done
+  [ -n "$task" ] || die 'Usage: forward --task-file PATH [--write]'
+  # Never remove an untrusted directory or another user's file.
+  [ ! -L "$task" ] && [ -f "$task" ] && [ -O "$task" ] || die 'Task must be an owned regular file, not a symlink.'
+  printf -v cleanup 'rm -f %q' "$task"
+  trap "$cleanup" EXIT
+  trap 'exit 1' HUP INT TERM
+  [ "$(file_mode "$task")" = 600 ] || die 'Task file must have mode 600.'
+  init_config
+  [ "${CLAUDE_RELAY_DEPTH+x}" != x ] || die 'Recursion refused: CLAUDE_RELAY_DEPTH is set.'
+  [ "$MAX_DEPTH" -gt 0 ] || die 'Forwarding disabled by max_depth=0.'
+  load_pool
+  [ -n "$CURRENT_PROFILE" ] || die 'Cannot identify the current profile in the pool.'
+  choose_profile "$CURRENT_PROFILE"
+  printf 'claude-relay: profile %s\n' "$PICKED" >&2
+  # The parent retains its cleanup trap while the child execs Claude.
+  (launch_claude "$PICKED" child -p --output-format text --permission-mode "$mode") < "$task"
+)

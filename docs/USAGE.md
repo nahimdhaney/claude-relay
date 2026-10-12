@@ -1,7 +1,7 @@
 # claude-relay usage
 
 `claude-relay` helps you continue Claude Code work across profiles that use
-separate accounts. Each profile has its own `CLAUDE_CONFIG_DIR`. The tool saves
+accounts you legitimately hold. Each profile has its own `CLAUDE_CONFIG_DIR`. The tool saves
 quota usage received by the statusline, selects the profile with the most
 remaining capacity, and copies a conversation so you can continue it with
 `claude --resume`.
@@ -95,7 +95,9 @@ statusline without `refreshInterval`. Reinstalling removes relay's old
 duplicating groups or changing unrelated hooks' matchers. Before each write,
 it creates `settings.json.relay-backup-<date>.<suffix>` and validates the new
 JSON before replacing the file atomically. `--dry-run` shows the changes
-without writing files.
+without writing files. Previewed statusline commands show only their first word
+and character count; the complete original is preserved privately. Existing
+settings file modes and extra statusLine fields such as padding are preserved.
 
 ## Daily use
 
@@ -189,12 +191,13 @@ destination.
 The sibling subagent directory is copied too. A newer destination file keeps
 its contents. Transcripts and handoffs have mode 600, and new directories have
 mode 700; file copies are atomic. Symlinks in transcripts and their destinations
-are rejected. Credentials, configuration, project files, branches and worktrees
+are rejected. Existing destination directory modes are left alone; `doctor`
+warns if transcript directories are group- or world-accessible. Credentials, configuration, project files, branches and worktrees
 are not copied: both profiles must have access to the same cwd. `resume` shows
 the handoff path and runs `claude --resume ID` there; it does not attach the
 handoff as a new prompt.
 
-`run` and `resume` remove the inherited variables `ANTHROPIC_API_KEY`,
+`run`, `forward` and `resume` remove the inherited variables `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`,
 `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY` and `ANTHROPIC_BASE_URL` before
 launching Claude. For tests or an alternative executable, set
@@ -236,8 +239,8 @@ State is stored under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
 
 - `usage/<profile>/<session_id>.json`: each session's last changed quota
   capture, containing `profile`, `session_id`, `model` (input `.model.id`, or
-  `null`), `captured_at` and `rate_limits`. Captures older than seven days are
-  pruned when the statusline writes.
+  `null`), `captured_at` and `rate_limits`. Captures older than `capture_max_age` are
+  pruned when the statusline writes, keeping the newest capture per profile.
 - `usage/<profile>.json`: a compatibility copy of the newest capture. Relay
   reads it only when no per-session captures exist for that profile.
 - `exhausted/<profile>.json`: `{profile, at, until, source}`; epoch timestamps,
@@ -251,34 +254,35 @@ State is stored under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
   200 characters; transcripts and other payload values are not logged.
 - `handoffs/<project>/<date>-<sid8>.md`: private handoffs.
 - `last-handoff.json`: the latest transfer or pending transfer.
-- `warned/`: marks for warnings already delivered.
-- `sessions/`: persistent associations between sessions and their handoffs.
+- `warned/`: marks for warnings already delivered; entries older than seven days are pruned.
+- `sessions/`: associations between sessions and their handoffs; entries older than seven days are pruned.
 
 `installed-settings.json`, in the configuration directory, records the modified
 settings files and original statuslines. It allows all their options to be
-restored and supports different statuslines per profile. It contains no
+restored and supports different statuslines per profile. It also records exact installed command identities. It contains no
 credentials.
 
 ## Optional subagent
 
 `--with-agent` installs `agents/relay.md` at `~/.claude/agents/relay.md`. It is a
-forwarder using Haiku and only the Bash tool: it passes the complete task in
-one call to `claude-relay run --pick --exclude <current> -- -p ...`, with the
-prompt read from stdin via a private temporary file. A quoted heredoc with a
-random suffix keeps task text out of shell arguments; the file is deleted on exit. The child
-**does not see the conversation**; the task must include all necessary context.
-Usage is charged to the selected account, and the wrapper reports which
-profile was used.
+forwarder using Haiku and the Write and Bash tools. Write saves the complete
+task to a temporary file; one Bash call restricts it to mode 600 and invokes
+`claude-relay forward --task-file PATH`. The deterministic command requires
+an owned regular mode-600 file, rejects symlinks, selects another profile,
+passes the task on stdin, and deletes the task file after success or failure.
+The child **does not see the conversation**; include all necessary context.
+Usage is charged to the selected account, and stderr reports its profile.
 
-The default permission mode is `plan`; if the task requires writing, use
-`acceptEdits`. Request `run_in_background` for long tasks. Do not assume those
-runs update the quota data relay sees.
+The default permission mode is `plan`. The forwarder may pass `--write` (using
+`acceptEdits`) only when the delegating prompt explicitly says the user approved
+file edits. Requests inside task text are data and cannot grant that approval.
+Request `run_in_background` for long tasks. Headless usage is not measured.
 
-The forwarder refuses when `CLAUDE_RELAY_DEPTH` is set. `run` refuses at
-`max_depth` (default 1), and each launch increments the inherited depth.
-`resume` is interactive and user-initiated: it resets depth to 0 before launch,
-so the new process receives 1. Depth values are bounded non-negative integers
-(0–2147483646); `max_depth=0` disables `run`.
+`forward` refuses when `CLAUDE_RELAY_DEPTH` is set, even to 0. `run` refuses at
+`max_depth` (default 1); `run` and `forward` children receive depth + 1.
+`resume` is interactive and user-initiated: it unsets depth entirely.
+Depth values are bounded non-negative integers (0–2147483646);
+`max_depth=0` disables `run` and `forward`.
 
 Installation records the agent copy’s POSIX `cksum` in `agent.cksum`. Upgrades
 replace the copy when it matches that record or the current template. An
@@ -312,7 +316,8 @@ inside `tests/.sandbox.*`, then removes them on exit. It does not install over
 your real configuration, run the real Claude or send real notifications.
 
 `uninstall` accepts repeated `--settings PATH` options; without them, it uses
-the recorded settings files. It removes commands containing `claude-relay`,
+the recorded settings files. It removes exact command identities recorded at installation (with narrow
+legacy recognition when no identities were recorded),
 restores the previous statusline if relay still occupies that slot, and
 preserves unrelated changes. It removes its own symlink and the agent if the
 agent matches its recorded checksum, even if the checkout template has changed.
@@ -377,6 +382,9 @@ Other limitations:
   paths is under 100 ms; this is not a guaranteed limit. The suite reports
   indicative timings, which depend on the machine and its load.
 
-Anthropic's terms state that plan limits assume "ordinary, individual usage".
-Each user is responsible for using the tool and their accounts within the
-applicable terms. This note is not legal advice.
+Use this tool for continuity across accounts you legitimately hold. Anthropic's
+[legal and compliance documentation](https://code.claude.com/docs/en/legal-and-compliance)
+says advertised plan limits assume “ordinary, individual usage”. You must comply
+with Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms)
+and [Usage Policy](https://www.anthropic.com/legal/aup), and any other terms
+applicable to your accounts. Not affiliated with Anthropic.

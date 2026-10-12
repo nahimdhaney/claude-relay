@@ -75,7 +75,7 @@ cp "$SANDBOX/old-other" "$STATE/usage/b/week-old.json"
 printf 'keep' > "$STATE/usage/a/notes.txt"
 capture_input idle model-a 16 | relay statusline > "$SANDBOX/out"
 check test ! -e "$STATE/usage/a/week-old.json"
-check test ! -e "$STATE/usage/b/week-old.json"
+check test -f "$STATE/usage/b/week-old.json" # Keep the newest even when stale.
 check test -f "$STATE/usage/a/idle.json"
 check equals "$(cat "$STATE/usage/a/notes.txt")" keep
 # Missing model is represented as null; unsafe session IDs fail silently.

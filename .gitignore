@@ -1,0 +1,7 @@
+tests/.sandbox.*
+.DS_Store
+*.swp
+*.swo
+*~
+*.relay-backup-*
+*.tmp.*

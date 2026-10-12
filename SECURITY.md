@@ -23,7 +23,10 @@ separately; relay never reads, copies or changes credentials, the keychain or
   optionally `~/.claude/agents/relay.md`. Settings, configuration, receipts and
   replaced agent files are backed up. JSON is validated before atomic replacement.
 - Relay state/configuration directories are private (700); written files and
-  backups are 600. Backups remain after uninstall; `--purge` removes relay state
+  backups are 600. Existing settings retain their original mode. New transcript
+  directories are 700; existing directory modes are retained and checked by
+  doctor. Transcript copies preserve bytes and mtime without source modes or
+  ACLs. Backups remain after uninstall; `--purge` removes relay state
   and configuration. Protect or delete retained settings/agent backups yourself.
 
 ## Threat model
@@ -39,9 +42,14 @@ Hook/statusline input, transcripts and account metadata are data, never shell
 code. Input must be a single JSON object. Profile/session names are validated,
 transcript paths are checked against the selected profile, and symlinked write
 locations are rejected. The optional forwarding agent sends the task through a
-private temporary file on stdin with a quoted, randomly suffixed heredoc; it
-never places task text in command arguments. Recursive forwarding is bounded by
-`max_depth` (default 1), and the forwarding agent refuses an inherited depth.
+private temporary file created with Write and passed to the deterministic
+`forward --task-file` command. It never places task text in shell code or
+command arguments. The command validates ownership, mode 600 and regular-file
+status, rejects symlinks and deletes the owned task file afterwards. Editing
+requires explicit approval in the delegating prompt and `--write`; requests
+inside task text cannot authorize edits. Recursive forwarding is bounded by
+`max_depth` (default 1), and `forward` refuses any inherited depth. Interactive
+`resume` unsets depth.
 
 The previous statusline is **trusted local code**: its configured command runs
 through Bash, receiving the original JSON only on stdin. Do not install an

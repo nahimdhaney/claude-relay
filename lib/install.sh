@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# The first token may itself be an environment assignment; mask its value.
+redact_command_filter='def redacted:
+  . as $c | (try capture("^\\s*(?<word>\\S+)").word catch "") |
+  (if contains("=") then split("=")[0]+"=…" else . end) +
+  " …(\($c|length) chars, preserved)";'
+preview_settings() {
+  jq "$redact_command_filter"'if (.statusLine.command?|type)=="string" then
+    .statusLine.command |= redacted else . end'
+}
 backup_file() {
   local file=$1 backup
   [ ! -L "$file" ] || die "Symlink file rejected: $file"
@@ -26,16 +35,24 @@ read_settings() {
   else printf '{}\n'; fi
 }
 write_settings() {
-  local file=$1 data=$2 backup
+  local file=$1 data=$2 backup mode=600 tmp
   printf '%s' "$data" | jq -e 'type=="object"' >/dev/null
   [ ! -L "$file" ] || die "Symlink settings file rejected: $file"
   mkdir -p "$(dirname "$file")"
   if [ -f "$file" ]; then
+    mode=$(file_mode "$file")
     backup=$(mktemp "$file.relay-backup-$(now_stamp).XXXXXX")
     cp -p "$file" "$backup"
     chmod 600 "$backup"
   fi
-  printf '%s\n' "$data" | atomic_json "$file"
+  (
+    tmp=$(mktemp "${file}.tmp.XXXXXX")
+    trap 'rm -f "$tmp"' EXIT
+    printf '%s\n' "$data" > "$tmp"
+    jq -e 'type=="object"' "$tmp" >/dev/null
+    chmod "$mode" "$tmp"
+    mv -f "$tmp" "$file"
+  )
 }
 add_install_profile() {
   local name=$1 dir=$2 i=0
@@ -57,7 +74,7 @@ cmd_install() {
   local settings=() settings_count=0 dry=false agent=false warn="$WARN_AT" handoff="$HANDOFF_AT"
   local names name i entry file original updated receipts='{}' pool='' config='' wrapped="$WRAPPED_STATUSLINE" command link existing detected logged reuse=false
   local agent_file="$HOME/.claude/agents/relay.md" agent_record="$CONFIG_DIR/agent.cksum" recorded=''
-  local originals=() updates=()
+  local originals=() updates=() identities
   INSTALL_NAMES=() INSTALL_DIRS=() INSTALL_COUNT=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -141,18 +158,22 @@ cmd_install() {
     original=$(read_settings "$file")
     # Keep hook provenance, but respect a statusline the user changed since
     # installation. Never overwrite its original with our own wrapper.
-    receipts=$(printf '%s' "$original" | jq -c -L "$RELAY_ROOT/lib" --arg file "$file" --argjson r "$receipts" --arg wrapped "$wrapped" '
+    receipts=$(printf '%s' "$original" | jq -c -L "$RELAY_ROOT/lib" --arg file "$file" --argjson r "$receipts" --arg wrapped "$wrapped" --arg command "$command" '
       include "settings";
+      (if $r[$file].commands!=null then [] else
+        [(.statusLine?, .hooks[]?[]?.hooks[]?) | select(is_relay(relay_commands($command)) or is_relay) | .command] end) as $legacy |
       if $r[$file]==null then
-        (receipt | if (.statusLine? | is_relay) then
+        (receipt | if (.statusLine? | is_relay(relay_commands($command)) or is_relay) then
           .hadStatusLine=($wrapped!="") |
           .statusLine=(if $wrapped!="" then {type:"command",command:$wrapped} else null end)
         else . end) as $new | $r+{($file):$new}
-      elif (.statusLine? | is_relay) then $r
-      else . as $s | $r | .[$file].hadStatusLine=($s|has("statusLine")) | .[$file].statusLine=$s.statusLine end')
-    existing=$(printf '%s' "$original" | jq -r '.statusLine | select((.command? // "" | contains("claude-relay"))|not) | .command // ""')
+      elif (.statusLine? | is_relay($r[$file].commands)) then $r
+      else . as $s | $r | .[$file].hadStatusLine=($s|has("statusLine")) | .[$file].statusLine=$s.statusLine end |
+      .[$file].commands=((.[$file].commands // []) + relay_commands($command) + $legacy | unique)')
+    identities=$(printf '%s' "$receipts" | jq -c --arg f "$file" '.[$f].commands')
+    existing=$(printf '%s' "$original" | jq -r -L "$RELAY_ROOT/lib" --argjson commands "$identities" 'include "settings"; .statusLine | select((is_relay($commands) or is_relay)|not) | .command // ""')
     [ -z "$existing" ] || wrapped=$existing
-    updated=$(printf '%s' "$original" | jq -L "$RELAY_ROOT/lib" --arg command "$command" 'include "settings"; install($command)')
+    updated=$(printf '%s' "$original" | jq -L "$RELAY_ROOT/lib" --arg command "$command" --argjson commands "$identities" 'include "settings"; install($command; $commands)')
     originals[$i]=$original updates[$i]=$updated
     i=$((i+1))
   done
@@ -170,11 +191,14 @@ cmd_install() {
   case "$wrapped" in *$'\n'*) die 'The previous statusline contains newlines; it cannot be saved as key=value.' ;; esac
   config="${config}warn_at=$warn"$'\n'"handoff_at=$handoff"$'\n'"unknown_score=$UNKNOWN_SCORE"$'\n'"exhausted_ttl=$EXHAUSTED_TTL"$'\n'"capture_max_age=$CAPTURE_MAX_AGE"$'\n'"max_depth=$MAX_DEPTH"$'\n'"wrapped_statusline=$wrapped"$'\n'
   if $dry; then
-    printf 'Proposed pool:\n%sProposed configuration:\n%s' "$pool" "$config"
+    printf 'Proposed pool:\n%sProposed configuration:\n' "$pool"
+    printf '%s' "$config" | jq -Rr "$redact_command_filter"'if startswith("wrapped_statusline=") then
+      ltrimstr("wrapped_statusline=") | "wrapped_statusline=" + (if .=="" then "" else redacted end)
+      else . end'
     i=0
     while [ "$i" -lt "$settings_count" ]; do
       printf '\nSettings: %s\n' "${settings[$i]}"
-      diff -u <(printf '%s\n' "${originals[$i]}" | jq .) <(printf '%s\n' "${updates[$i]}") || [ "$?" -eq 1 ]
+      diff -U 0 <(printf '%s\n' "${originals[$i]}" | preview_settings) <(printf '%s\n' "${updates[$i]}" | preview_settings) || [ "$?" -eq 1 ]
       i=$((i+1))
     done
     printf '\nSymlink: %s -> %s\n' "$link" "$RELAY_BIN"
@@ -242,7 +266,7 @@ cmd_uninstall() {
 }
 cmd_doctor() {
   [ "$#" -eq 0 ] || die 'Usage: doctor'
-  local failed=0 i=0 file m jq_version
+  local failed=0 i=0 file m jq_version identities
   jq_version=$(jq --version)
   printf 'jq: %s\nBash: %s\n' "$jq_version" "$BASH_VERSION"
   if [[ "$jq_version" =~ ^jq-([0-9]+)\.([0-9]+) ]] &&
@@ -258,14 +282,22 @@ cmd_doctor() {
     if [ ! -d "${POOL_DIRS[$i]}" ]; then printf '%s: missing directory\n' "${POOL_NAMES[$i]}"; failed=1; fi
     m=$(measurement "${POOL_NAMES[$i]}")
     printf '%s: %s\n' "${POOL_NAMES[$i]}" "$(printf '%s' "$m" | jq -r 'if .known then "data from \(.age_seconds)s ago" else "no data" end')"
+    if [ -d "${POOL_DIRS[$i]}/projects" ]; then
+      while IFS= read -r -d '' file; do
+        case "$(file_mode "$file")" in ?00) ;; *) printf 'Warning: group- or world-accessible transcript directory: %s\n' "$file" ;; esac
+      done < <(find "${POOL_DIRS[$i]}/projects" -type d -print0)
+    fi
     i=$((i+1))
   done
   if [ ! -f "$CONFIG_DIR/installed-settings.json" ] || ! jq -e 'type=="object" and length>0' "$CONFIG_DIR/installed-settings.json" >/dev/null 2>&1; then printf 'Settings: no installation recorded\n'; failed=1
   else
     while IFS= read -r file; do
-      if [ -f "$file" ] && jq -e '
-        (.statusLine.command // "" | contains("claude-relay"))' "$file" >/dev/null 2>&1 &&
-        jq -e '.hooks as $h | all(["UserPromptSubmit","PostToolUse","StopFailure"][]; . as $e | any($h[$e][]?.hooks[]?; (.command // "" | contains("claude-relay hook"))))' "$file" >/dev/null 2>&1; then
+      identities=$(jq -c --arg f "$file" '.[$f].commands' "$CONFIG_DIR/installed-settings.json")
+      if [ -f "$file" ] && jq -e -L "$RELAY_ROOT/lib" --argjson commands "$identities" '
+        include "settings";
+        (.statusLine | is_relay($commands)) and
+        (.hooks as $h | all(["UserPromptSubmit","PostToolUse","StopFailure"][];
+          . as $e | any($h[$e][]?.hooks[]?; is_relay($commands))))' "$file" >/dev/null 2>&1; then
         printf 'Settings: OK %s\n' "$file"
       else printf 'Settings: missing hooks/statusline in %s\n' "$file"; failed=1; fi
     done < <(jq -r 'keys[]' "$CONFIG_DIR/installed-settings.json")

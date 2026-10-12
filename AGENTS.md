@@ -12,6 +12,8 @@ whenever a step says so. Do not improvise around a failed step: report it.
   entries, keeps everything else, and writes a backup first.
 - Install only the profiles the user names. Never add a work or employer account
   unless the user explicitly asks for it.
+- The forwarding agent is opt-in: ask the user whether they want it. Add
+  `--with-agent` only if they explicitly agree, including in the preview.
 - Show the user the `--dry-run` output and get a yes before the real install.
 
 ## 1. Check requirements
@@ -49,8 +51,8 @@ A profile is a Claude Code config directory with its own login. Look for:
 ```
 
 The detector lists candidate paths, suggested names, login metadata and pool
-membership; it does not sign in or inspect credentials. Show the list to the
-user and **ask which profiles to include** and what to call each one. Each included profile must already be logged in (the user runs
+membership; it does not sign in or inspect credentials. Show the user only candidate names and emails, once; do not repeat the detector
+output elsewhere. **Ask which profiles to include** and what to call each one. Each included profile must already be logged in (the user runs
 `claude` with that `CLAUDE_CONFIG_DIR` and signs in; never do the login flow
 yourself).
 
@@ -59,13 +61,13 @@ yourself).
 With profiles under `~/.claude-profiles/<name>`:
 
 ```bash
-./install.sh --profiles personal,side --with-agent --dry-run
+./install.sh --profiles personal,side --dry-run
 ```
 
 With arbitrary directories:
 
 ```bash
-./install.sh --profile "personal=$HOME/.claude" --profile "side=$HOME/.claude-side" --with-agent --dry-run
+./install.sh --profile "personal=$HOME/.claude" --profile "side=$HOME/.claude-side" --dry-run
 ```
 
 Show the output to the user. It lists the pool, the config, and a diff of every
@@ -96,3 +98,10 @@ has had at least one reply in an interactive session; that is expected.
 - Daily use: `claude-relay status`, `claude-relay pick`, and
   `claude-relay resume --last` after a handoff.
 - To remove it: `claude-relay uninstall` (add `--purge` to delete its state).
+
+Use this tool for continuity across accounts you legitimately hold. Anthropic's
+[legal and compliance documentation](https://code.claude.com/docs/en/legal-and-compliance)
+says advertised plan limits assume “ordinary, individual usage”. You must comply
+with Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms)
+and [Usage Policy](https://www.anthropic.com/legal/aup), and any other terms
+applicable to your accounts. Not affiliated with Anthropic.

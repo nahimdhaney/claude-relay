@@ -5,10 +5,12 @@ copy_private() (
   [ ! -L "$src" ] && [ -f "$src" ] || die "Transcript is not a regular file: $src"
   [ ! -L "$dst" ] || die "Symlink destination rejected: $dst"
   if [ -f "$dst" ] && [ "$dst" -nt "$src" ]; then chmod 600 "$dst"; exit 0; fi
-  mkdir -p "$(dirname "$dst")"
+  new_private_dir "$(dirname "$dst")"
   tmp=$(mktemp "${dst}.tmp.XXXXXX")
   trap 'rm -f "$tmp"' EXIT
-  cp -p "$src" "$tmp"
+  if [ "$(uname -s)" = Darwin ]; then chmod -N "$tmp" 2>/dev/null || true; fi
+  cat "$src" > "$tmp"
+  touch -r "$src" "$tmp"
   chmod 600 "$tmp"
   mv -f "$tmp" "$dst"
 )
@@ -25,8 +27,7 @@ copy_siblings() {
     relative=${path#"$src"}
     if [ -d "$path" ]; then
       [ ! -L "$dst$relative" ] || die 'Symlink destination rejected.'
-      mkdir -p "$dst$relative"
-      chmod 700 "$dst$relative"
+      new_private_dir "$dst$relative"
     else copy_private "$path" "$dst$relative"; fi
   done < <(find "$src" -print0)
 }
@@ -159,6 +160,6 @@ cmd_resume() {
   safe_name "$session" || die 'Invalid session ID.'
   cwd=$(resolve_dir "$cwd") || die 'The cwd does not exist.'
   cd "$cwd"
-  CLAUDE_RELAY_DEPTH=0
-  launch_claude "$to" --resume "$session"
+  unset CLAUDE_RELAY_DEPTH
+  launch_claude "$to" interactive --resume "$session"
 }

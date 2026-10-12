@@ -33,8 +33,18 @@ init_config() {
   EXHAUSTED_TTL=${CLAUDE_RELAY_EXHAUSTED_TTL:-$EXHAUSTED_TTL}
   CAPTURE_MAX_AGE=${CLAUDE_RELAY_CAPTURE_MAX_AGE:-$CAPTURE_MAX_AGE}
   MAX_DEPTH=${CLAUDE_RELAY_MAX_DEPTH:-$MAX_DEPTH}
-  # Safe workers validate the values they need when processing the event.
-  if [ "${SAFE_WORKER:-false}" = true ]; then return; fi
+  # Bad local configuration must not silently disable session integrations.
+  if [ "${SAFE_WORKER:-false}" = true ]; then
+    local defaults
+    defaults=$(jq -nr --arg w "$WARN_AT" --arg h "$HANDOFF_AT" --arg u "$UNKNOWN_SCORE" --arg t "$EXHAUSTED_TTL" --arg a "$CAPTURE_MAX_AGE" --arg d "$MAX_DEPTH" '
+      def pct($v;$default): try ($v|tonumber|if .>=0 and .<=100 then . else $default end) catch $default;
+      def positive($v;$default): try ($v|tonumber|if .>0 and .==floor then . else $default end) catch $default;
+      [pct($w;90),pct($h;97),pct($u;50),positive($t;3600),positive($a;21600)] |
+      if .[0]>.[1] then .[0]=90 | .[1]=97 else . end | @tsv')
+    IFS=$'\t' read -r WARN_AT HANDOFF_AT UNKNOWN_SCORE EXHAUSTED_TTL CAPTURE_MAX_AGE <<< "$defaults"
+    valid_depth "$MAX_DEPTH" || MAX_DEPTH=1
+    return
+  fi
   jq -en --arg w "$WARN_AT" --arg h "$HANDOFF_AT" --arg u "$UNKNOWN_SCORE" '
     [$w,$h,$u] | map(tonumber) | all(.>=0 and .<=100) and (.[0]<=.[1])' >/dev/null || die 'Invalid thresholds (0–100, warn_at <= handoff_at).'
   jq -en --arg ttl "$EXHAUSTED_TTL" '$ttl|tonumber|.>0 and .==floor' >/dev/null || die 'exhausted_ttl must be a positive integer (seconds).'
@@ -77,6 +87,7 @@ load_pool() {
   local name dir extra resolved current i
   [ -f "$POOL_FILE" ] || die "Pool does not exist: $POOL_FILE; run install."
   current=$(resolve_dir "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" || true)
+  CURRENT_CONFIG_DIR=${current:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}
   while IFS=$'\t' read -r name dir extra || [ -n "$name" ]; do
     case "$name" in ''|'#'*) continue ;; esac
     safe_name "$name" || die "Invalid profile name: $name"
@@ -114,5 +125,30 @@ atomic_json() (
   chmod 600 "$tmp"
   mv -f "$tmp" "$target"
 )
-project_name() { printf '%s' "$1" | jq -Rr 'gsub("[^a-zA-Z0-9]";"-")'; }
+project_name() { printf '%s' "$1" | jq -Rsr 'gsub("[^a-zA-Z0-9]";"-")'; }
 now_stamp() { jq -nr 'now | strflocaltime("%Y%m%d-%H%M%S")'; }
+
+# POSIX ls exposes mode bits on both macOS and Linux without stat variants.
+file_mode() {
+  local bits
+  bits=$(LC_ALL=C ls -ld "$1")
+  bits=${bits:0:10}
+  printf '%s' "$bits" | jq -Rr '
+    . as $s |
+    ((if ($s[3:4]|test("[sS]")) then 4 else 0 end) +
+     (if ($s[6:7]|test("[sS]")) then 2 else 0 end) +
+     (if ($s[9:10]|test("[tT]")) then 1 else 0 end)) as $special |
+    [1,4,7] | map(. as $i |
+      (if $s[$i:$i+1]=="r" then 4 else 0 end) +
+      (if $s[$i+1:$i+2]=="w" then 2 else 0 end) +
+      (if ($s[$i+2:$i+3]|test("[xst]")) then 1 else 0 end)) | join("") | (if $special==0 then "" else ($special|tostring) end) + .'
+}
+# New transcript directories are private; existing user directories are retained.
+new_private_dir() {
+  local path=$1
+  [ ! -L "$path" ] || die "Symlink directory rejected: $path"
+  [ ! -d "$path" ] || return 0
+  new_private_dir "${path%/*}"
+  mkdir "$path"
+  chmod 700 "$path"
+}
