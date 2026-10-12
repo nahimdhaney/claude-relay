@@ -41,6 +41,7 @@ check_destination_dirs() {
 session_source() {
   local from_dir=$1 session=$2 transcript=$3 cwd=$4 candidate project newest=''
   if [ -n "$transcript" ]; then
+    transcript=$(absolute_path "$transcript")
     [ ! -L "$transcript" ] || die 'Symlink transcript rejected.'
     transcript="$(resolve_dir "$(dirname "$transcript")")/$(basename "$transcript")"
     case "$transcript" in "$from_dir"/projects/*/*.jsonl) ;; *) die 'The transcript does not belong to the source profile.' ;; esac
@@ -155,6 +156,9 @@ cmd_resume() {
   session=$(printf '%s' "$record" | jq -er .session_id)
   md=$(printf '%s' "$record" | jq -r '.handoff_md // ""')
   [ -z "$md" ] || printf 'Handoff: %s\n' "$md" >&2
+  safe_name "$session" || die 'Invalid session ID.'
+  cwd=$(resolve_dir "$cwd") || die 'The cwd does not exist.'
   cd "$cwd"
+  CLAUDE_RELAY_DEPTH=0
   launch_claude "$to" --resume "$session"
 }

@@ -27,9 +27,9 @@ init_config
 COMMAND=${1:-help}
 [ "$#" -eq 0 ] || shift
 case "$COMMAND" in
-  --version) printf 'claude-relay 0.1.0\n' ;;
+  --version) printf 'claude-relay %s\n' "$(cat "$RELAY_ROOT/VERSION")" ;;
   help|--help|-h) source "$RELAY_ROOT/lib/help.sh"; relay_help "$@" ;;
-  status|pick|run|exhausted) source "$RELAY_ROOT/lib/profiles.sh"; "cmd_$COMMAND" "$@" ;;
+  detect|status|pick|run|exhausted) source "$RELAY_ROOT/lib/profiles.sh"; "cmd_$COMMAND" "$@" ;;
   handoff|resume) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/handoff.sh"; "cmd_$COMMAND" "$@" ;;
   statusline|hook) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/handoff.sh"; source "$RELAY_ROOT/lib/hooks.sh"; "cmd_$COMMAND" "$@" ;;
   install|uninstall|doctor) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/install.sh"; "cmd_$COMMAND" "$@" ;;

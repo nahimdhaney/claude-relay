@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="claude-relay logo">
+  <title>claude-relay</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0F766E"/>
+      <stop offset="1" stop-color="#134E4A"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <!-- two accounts -->
+  <circle cx="34" cy="78" r="16" fill="#CCFBF1"/>
+  <circle cx="94" cy="78" r="16" fill="none" stroke="#CCFBF1" stroke-width="6"/>
+  <!-- the session being handed over -->
+  <path d="M36 56 C 46 24, 79 23, 86.5 46" fill="none" stroke="#FBBF24" stroke-width="7" stroke-linecap="round"/>
+    <polygon points="79.6,48.6 93.9,44.3 90.2,57.6" fill="#FBBF24" stroke="#FBBF24" stroke-width="2" stroke-linejoin="round"/>
+</svg>

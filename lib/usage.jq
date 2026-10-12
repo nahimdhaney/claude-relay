@@ -21,8 +21,10 @@ def measurements($unknown; $max_age):
   if $max_age>0 and $max_age==($max_age|floor) then . else error("Invalid capture_max_age") end |
   map(select(type=="object" and (.captured_at|type)=="number")) |
   sort_by([.captured_at,.session_id]) as $all |
-  [$all[] | select(.captured_at >= $now-$max_age)] |
-  (if length>0 then . else $all[-1:] end) as $captures |
+  [$all[] | select(.captured_at >= $now-$max_age)] as $fresh |
+  [$fresh[] | select(window("five_hour";$now)!=null)] as $current |
+  (if ($current|length)>0 then $current
+   elif ($fresh|length)>0 then $fresh else $all[-1:] end) as $captures |
   {five_hour:($captures|selected_window("five_hour";$now)),
    seven_day:($captures|selected_window("seven_day";$now)),
    capture_count:($captures|length), captured_at:($captures|map(.captured_at)|max)} |

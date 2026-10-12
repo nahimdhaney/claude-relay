@@ -27,14 +27,14 @@ check cmp -s "$SANDBOX/legacy-newest" "$STATE/usage/a.json"
 capture_input live-high model-a 15 | relay statusline > "$SANDBOX/out"
 check json_is "$STATE/usage/a/live-high.json" '.rate_limits.seven_day.used_percentage==15 and .captured_at>now-30'
 check cmp -s "$STATE/usage/a/live-high.json" "$STATE/usage/a.json"
-# Latest reset beats a higher percentage; expired windows disappear entirely.
+# A capture with an expired five-hour window cannot override a current one.
 capture_input live-low model-b 2 | jq '.rate_limits.seven_day.resets_at=4102444801 | .rate_limits.five_hour.resets_at=1' | relay statusline > "$SANDBOX/out"
 relay status --json > "$SANDBOX/status"
-check json_is "$SANDBOX/status" '.[0].seven_day.used_percentage==2 and .[0].seven_day.session_id=="live-low" and .[0].five_hour.session_id=="live-high"'
+check json_is "$SANDBOX/status" '.[0].seven_day.used_percentage==15 and .[0].seven_day.session_id=="live-high" and .[0].five_hour.session_id=="live-high"'
 # Never consult legacy when session files exist, including corrupt legacy JSON.
 printf '{broken' > "$STATE/usage/a.json"
 relay status --json > "$SANDBOX/status"
-check json_is "$SANDBOX/status" '.[0].capture_count==2 and .[0].score==23'
+check json_is "$SANDBOX/status" '.[0].capture_count==1 and .[0].score==23'
 # Deterministic captures for freshness selection and stale-only fallback.
 mkdir -p "$STATE/usage/a"
 rm -f "$STATE/usage/a/"*.json
@@ -44,14 +44,14 @@ relay status --json > "$SANDBOX/status"
 check json_is "$SANDBOX/status" '.[0].capture_count==1 and .[0].score==2 and .[0].five_hour==null and .[0].seven_day.session_id=="new"'
 printf 'capture_max_age=30000\n' >> "$XDG_CONFIG_HOME/claude-relay/config"
 relay status --json > "$SANDBOX/status"
-check json_is "$SANDBOX/status" '.[0].capture_count==2 and .[0].score==99 and .[0].seven_day.session_id=="old"'
+check json_is "$SANDBOX/status" '.[0].capture_count==1 and .[0].score==99 and .[0].seven_day.session_id=="old"'
 CLAUDE_RELAY_CAPTURE_MAX_AGE=60 relay status --json > "$SANDBOX/status"
 check json_is "$SANDBOX/status" '.[0].capture_count==1 and .[0].score==2 and .[0].five_hour==null and .[0].age_seconds>=100 and .[0].seven_day.model=="model-new"'
 jq '.rate_limits.seven_day.resets_at=1' "$STATE/usage/a/new.json" > "$SANDBOX/expired"
 mv "$SANDBOX/expired" "$STATE/usage/a/new.json"
 CLAUDE_RELAY_CAPTURE_MAX_AGE=60 relay status --json > "$SANDBOX/status"
 check json_is "$SANDBOX/status" '.[0].capture_count==1 and .[0].known==false and .[0].score==50 and .[0].five_hour==null and .[0].seven_day==null'
-# Guard must use the conservative aggregate without needing the legacy file.
+# Guard must use the selected current captures without needing the legacy file.
 rm -f "$STATE/usage/a.json"
 guard_input | relay hook guard > "$SANDBOX/out"
 check json_is "$SANDBOX/out" '.hookSpecificOutput.additionalContext | contains("99")'

@@ -4,11 +4,12 @@
 store_capture() (
   # Command substitutions otherwise disable errexit in Bash, including 3.2.
   set -e
-  local data=$1 sid target previous newest file lock owner pid present prune cleanup attempts=0
+  local data=$1 sid target previous newest file dir lock owner pid present prune cleanup attempts=0
   sid=$(printf '%s' "$data" | jq -er '.session_id | select(type=="string")')
   safe_name "$sid" || return 1
-  mkdir -p "$STATE_DIR/usage/$CURRENT_PROFILE"
+  private_dir "$STATE_DIR/usage/$CURRENT_PROFILE"
   lock="$STATE_DIR/usage/.capture-lock"
+  [ ! -L "$lock" ] || return 1
   until mkdir "$lock" 2>/dev/null; do
     present=false
     for owner in "$lock/"*; do
@@ -51,14 +52,14 @@ store_capture() (
   printf '%s' "$newest" | atomic_json "$STATE_DIR/usage/$CURRENT_PROFILE.json"
   # Only session captures are pruned; never use filesystem dates or touch
   # legacy state, lock directories, temporary files or unrelated extensions.
-  for file in "$STATE_DIR/usage/"*/*.json; do
-    [ -f "$file" ] || continue
-    # A damaged inactive capture has no trustworthy age. Leave it alone,
-    # just as the measurement reader ignores malformed captures.
-    prune=$(jq -r '(.captured_at|type)=="number" and .captured_at < now-604800' "$file" 2>/dev/null) || continue
-    if [ "$prune" = true ]; then
-      rm -f "$file"
-    fi
+  for dir in "$STATE_DIR/usage/"*; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    for file in "$dir/"*.json; do
+      [ -f "$file" ] && [ ! -L "$file" ] || continue
+      # Damaged inactive captures have no trustworthy age; leave them alone.
+      prune=$(jq -r '(.captured_at|type)=="number" and .captured_at < now-604800' "$file" 2>/dev/null) || continue
+      if [ "$prune" = true ]; then rm -f "$file"; fi
+    done
   done
   printf '%s\n' "$data"
 )
@@ -68,6 +69,7 @@ cmd_statusline() {
   local input data line wrapped='' receipts='{}' result save recovered
   input=$(cat; printf '.')
   input=${input%.}
+  validate_input "$input"
   # Per-settings originals let different profiles retain distinct status lines.
   if [ -f "$CONFIG_DIR/installed-settings.json" ]; then
     receipts=$(cat "$CONFIG_DIR/installed-settings.json")
@@ -117,6 +119,7 @@ hook_guard() {
   local input sid event cwd transcript plan fields score reset level marker md project stamp context best='' record output metrics
   metrics=$(measurement "$CURRENT_PROFILE")
   input=$(cat)
+  validate_input "$input"
   # Validate all fields before producing any side effects.
   plan=$(printf '%s' "$input" | jq -c --argjson m "$metrics" \
     --arg w "$WARN_AT" --arg h "$HANDOFF_AT" --arg u "$UNKNOWN_SCORE" '
@@ -138,12 +141,13 @@ hook_guard() {
   else
     cwd=$(printf '%s' "$input" | jq -r .cwd)
     transcript=$(printf '%s' "$input" | jq -r .transcript_path)
+    transcript=$(absolute_path "$transcript")
     project=$(basename "$(dirname "$transcript")")
     case "$project" in ''|.|..|/) project=$(project_name "$cwd") ;; esac
     stamp=$(now_stamp)
     md="$STATE_DIR/handoffs/$project/$stamp-${sid:0:8}.md"
     # A private placeholder means the model's subsequent edit also stays 600.
-    mkdir -p "$(dirname "$md")"
+    prepare_file "$md"
     (set -o noclobber; : > "$md") 2>/dev/null || [ -f "$md" ]
     chmod 600 "$md"
     if choose_profile "$CURRENT_PROFILE"; then best=$PICKED; fi
@@ -154,7 +158,7 @@ hook_guard() {
     [ -z "$best" ] || context="$context The best profile right now is $best; the user can select it with claude-relay resume --last --to $best."
   fi
   output=$(jq -n --arg e "$event" --arg c "$context" '{hookSpecificOutput:{hookEventName:$e,additionalContext:$c}}')
-  mkdir -p "$STATE_DIR/warned"
+  prepare_file "$marker"
   # Atomic noclobber prevents concurrent hooks from issuing the same warning.
   if (set -o noclobber; : > "$marker") 2>/dev/null; then printf '%s\n' "$output"; fi
 }
@@ -163,6 +167,7 @@ hook_stop_failure() {
   [ -n "$CURRENT_PROFILE" ] || return 0
   local input sid transcript cwd to message record event
   input=$(cat)
+  validate_input "$input"
   # JSONL escapes delimiters; strip control characters before truncation.
   # Deliberately project an allowlist, never the transcript or full input.
   event=$(printf '%s' "$input" | jq -ce --arg p "$CURRENT_PROFILE" '
@@ -171,7 +176,7 @@ hook_stop_failure() {
     {at:(now|todateiso8601),profile:$p,session_id:((.session_id // "")|sanitized),keys:keys} +
     (reduce ["error","error_type","error_details","matcher","reason","message"][] as $key
       ({}; if $input|has($key) then .[$key]=($input[$key]|sanitized) else . end))')
-  mkdir -p "$STATE_DIR"
+  prepare_file "$STATE_DIR/events.log"
   : >> "$STATE_DIR/events.log"
   chmod 600 "$STATE_DIR/events.log"
   printf '%s\n' "$event" >> "$STATE_DIR/events.log"

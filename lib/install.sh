@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
+backup_file() {
+  local file=$1 backup
+  [ ! -L "$file" ] || die "Symlink file rejected: $file"
+  if [ -f "$file" ]; then
+    backup=$(mktemp "$file.relay-backup-$(now_stamp).XXXXXX")
+    cp -p "$file" "$backup"
+    chmod 600 "$backup"
+  fi
+}
 atomic_text() (
   local target=$1 tmp
-  mkdir -p "$(dirname "$target")"
+  prepare_file "$target"
+  backup_file "$target"
   tmp=$(mktemp "${target}.tmp.XXXXXX")
   trap 'rm -f "$tmp"' EXIT
   cat > "$tmp"
@@ -45,7 +55,8 @@ add_install_profile() {
 }
 cmd_install() {
   local settings=() settings_count=0 dry=false agent=false warn="$WARN_AT" handoff="$HANDOFF_AT"
-  local names name i entry file original updated receipts='{}' pool='' config='' wrapped="$WRAPPED_STATUSLINE" command link existing
+  local names name i entry file original updated receipts='{}' pool='' config='' wrapped="$WRAPPED_STATUSLINE" command link existing detected logged reuse=false
+  local agent_file="$HOME/.claude/agents/relay.md" agent_record="$CONFIG_DIR/agent.cksum" recorded=''
   local originals=() updates=()
   INSTALL_NAMES=() INSTALL_DIRS=() INSTALL_COUNT=0
   while [ "$#" -gt 0 ]; do
@@ -68,7 +79,34 @@ cmd_install() {
     esac
   done
   jq -en --arg w "$warn" --arg h "$handoff" '[$w,$h]|map(tonumber)|.[0]>=0 and .[0]<=.[1] and .[1]<=100' >/dev/null || die 'Invalid thresholds.'
-  if [ "$INSTALL_COUNT" -eq 0 ]; then add_install_profile default "$HOME/.claude"; fi
+  if [ "$INSTALL_COUNT" -eq 0 ]; then
+    if [ -f "$POOL_FILE" ]; then
+      load_pool
+      reuse=true i=0
+      while [ "$i" -lt "$POOL_COUNT" ]; do
+        add_install_profile "${POOL_NAMES[$i]}" "${POOL_DIRS[$i]}"
+        i=$((i+1))
+      done
+    else
+      detected=$(detect_profiles)
+      logged=$(printf '%s' "$detected" | jq '[.[]|select(.logged_in)]|length')
+      if [ "$logged" -ne 1 ]; then
+        printf '%s' "$detected" | detect_table
+        printf 'claude-relay: %s logged-in profiles; choose with --profiles a,b or --profile name=dir\n' "$logged" >&2
+        return 2
+      fi
+      name=$(printf '%s' "$detected" | jq -r '.[]|select(.logged_in)|.name')
+      entry=$(printf '%s' "$detected" | jq -r '.[]|select(.logged_in)|.path')
+      add_install_profile "$name" "$entry"
+    fi
+  fi
+  if [ -f "$CONFIG_DIR/installed-settings.json" ]; then receipts=$(jq -ce 'select(type=="object")' "$CONFIG_DIR/installed-settings.json"); fi
+  if $reuse && [ "$settings_count" -eq 0 ]; then
+    while IFS= read -r file; do
+      [ -n "$file" ] || continue
+      settings[$settings_count]=$file; settings_count=$((settings_count+1))
+    done < <(printf '%s' "$receipts" | jq -r 'keys[]')
+  fi
   if [ "$settings_count" -eq 0 ]; then
     if command -v claude-profile >/dev/null 2>&1; then
       settings[0]="$HOME/.claude/settings.json"; settings_count=1
@@ -82,10 +120,19 @@ cmd_install() {
   if [ -e "$link" ] || [ -L "$link" ]; then
     [ -L "$link" ] && [ "$(readlink "$link")" = "$RELAY_BIN" ] || die "An unrelated executable already exists: $link"
   fi
-  if $agent && [ -e "$HOME/.claude/agents/relay.md" ]; then
-    cmp -s "$RELAY_ROOT/agents/relay.md" "$HOME/.claude/agents/relay.md" || die 'A different relay.md agent already exists.'
+  [ ! -f "$agent_record" ] || agent=true
+  # A pre-checksum installation must not silently keep its old forwarder.
+  if $reuse && [ -e "$agent_file" ]; then agent=true; fi
+  if $agent; then
+    [ ! -L "$agent_file" ] && [ ! -L "$agent_record" ] || die 'Symlink agent or checksum rejected.'
+    [ ! -f "$agent_record" ] || recorded=$(cat "$agent_record")
+    if [ -e "$agent_file" ]; then
+      [ -f "$agent_file" ] || die "Not a regular file: $agent_file"
+      if ! cmp -s "$RELAY_ROOT/agents/relay.md" "$agent_file" && [ "$(cksum < "$agent_file")" != "$recorded" ]; then
+        die "relay.md was edited or is unrecognized: $agent_file. Move it aside to keep your edits, then rerun install --with-agent."
+      fi
+    fi
   fi
-  if [ -f "$CONFIG_DIR/installed-settings.json" ]; then receipts=$(jq -ce 'select(type=="object")' "$CONFIG_DIR/installed-settings.json"); fi
   printf -v command '%q' "$RELAY_BIN"
   i=0
   while [ "$i" -lt "$settings_count" ]; do
@@ -117,11 +164,11 @@ cmd_install() {
   # Keep unknown config keys and never source/eval this file.
   if [ -f "$CONFIG_DIR/config" ]; then
     while IFS= read -r entry || [ -n "$entry" ]; do
-      case "$entry" in warn_at=*|handoff_at=*|unknown_score=*|exhausted_ttl=*|capture_max_age=*|wrapped_statusline=*) ;; *) config="$config$entry"$'\n' ;; esac
+      case "$entry" in warn_at=*|handoff_at=*|unknown_score=*|exhausted_ttl=*|capture_max_age=*|max_depth=*|wrapped_statusline=*) ;; *) config="$config$entry"$'\n' ;; esac
     done < "$CONFIG_DIR/config"
   fi
   case "$wrapped" in *$'\n'*) die 'The previous statusline contains newlines; it cannot be saved as key=value.' ;; esac
-  config="${config}warn_at=$warn"$'\n'"handoff_at=$handoff"$'\n'"unknown_score=$UNKNOWN_SCORE"$'\n'"exhausted_ttl=$EXHAUSTED_TTL"$'\n'"capture_max_age=$CAPTURE_MAX_AGE"$'\n'"wrapped_statusline=$wrapped"$'\n'
+  config="${config}warn_at=$warn"$'\n'"handoff_at=$handoff"$'\n'"unknown_score=$UNKNOWN_SCORE"$'\n'"exhausted_ttl=$EXHAUSTED_TTL"$'\n'"capture_max_age=$CAPTURE_MAX_AGE"$'\n'"max_depth=$MAX_DEPTH"$'\n'"wrapped_statusline=$wrapped"$'\n'
   if $dry; then
     printf 'Proposed pool:\n%sProposed configuration:\n%s' "$pool" "$config"
     i=0
@@ -136,12 +183,16 @@ cmd_install() {
   fi
   printf '%s' "$pool" | atomic_text "$POOL_FILE"
   printf '%s' "$config" | atomic_text "$CONFIG_DIR/config"
+  backup_file "$CONFIG_DIR/installed-settings.json"
   printf '%s' "$receipts" | atomic_json "$CONFIG_DIR/installed-settings.json"
   i=0
   while [ "$i" -lt "$settings_count" ]; do write_settings "${settings[$i]}" "${updates[$i]}"; i=$((i+1)); done
   mkdir -p "$HOME/.local/bin"
   [ -L "$link" ] || ln -s "$RELAY_BIN" "$link"
-  if $agent; then atomic_text "$HOME/.claude/agents/relay.md" < "$RELAY_ROOT/agents/relay.md"; fi
+  if $agent; then
+    atomic_text "$agent_file" < "$RELAY_ROOT/agents/relay.md"
+    cksum < "$agent_file" | atomic_text "$agent_record"
+  fi
   case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) printf 'Add %s/.local/bin to PATH.\n' "$HOME" >&2 ;; esac
   printf 'claude-relay installed (%s profiles).\n' "$INSTALL_COUNT"
 }
@@ -174,10 +225,18 @@ cmd_uninstall() {
     write_settings "$file" "$updated"
     remaining=$(printf '%s' "$remaining" | jq -c --arg f "$file" 'del(.[$f])')
   done
-  if [ -f "$CONFIG_DIR/installed-settings.json" ]; then printf '%s' "$remaining" | atomic_json "$CONFIG_DIR/installed-settings.json"; fi
+  if [ -f "$CONFIG_DIR/installed-settings.json" ]; then
+    backup_file "$CONFIG_DIR/installed-settings.json"
+    printf '%s' "$remaining" | atomic_json "$CONFIG_DIR/installed-settings.json"
+  fi
   link="$HOME/.local/bin/claude-relay"
   if [ -L "$link" ] && [ "$(readlink "$link")" = "$RELAY_BIN" ]; then rm -f "$link"; fi
-  if [ -f "$HOME/.claude/agents/relay.md" ] && cmp -s "$RELAY_ROOT/agents/relay.md" "$HOME/.claude/agents/relay.md"; then rm -f "$HOME/.claude/agents/relay.md"; fi
+  file="$HOME/.claude/agents/relay.md"
+  if [ -f "$file" ] && [ ! -L "$file" ] && [ -f "$CONFIG_DIR/agent.cksum" ] &&
+    [ "$(cksum < "$file")" = "$(cat "$CONFIG_DIR/agent.cksum")" ]; then
+    backup_file "$file"
+    rm -f "$file" "$CONFIG_DIR/agent.cksum"
+  fi
   if $purge; then rm -rf "$CONFIG_DIR" "$STATE_DIR"; fi
   printf 'claude-relay uninstalled.\n'
 }

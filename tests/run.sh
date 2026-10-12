@@ -7,7 +7,7 @@ trap 'rm -rf "$SANDBOX"' EXIT
 export HOME="$SANDBOX/home" XDG_CONFIG_HOME="$SANDBOX/config" XDG_STATE_HOME="$SANDBOX/state"
 export XDG_CACHE_HOME="$SANDBOX/cache" XDG_DATA_HOME="$SANDBOX/data" XDG_RUNTIME_DIR="$SANDBOX/runtime" TMPDIR="$SANDBOX/tmp"
 export CLAUDE_PROFILES_ROOT="$SANDBOX/profiles" CLAUDE_CONFIG_DIR="$SANDBOX/profiles/a"
-unset CLAUDE_RELAY_WARN_AT CLAUDE_RELAY_HANDOFF_AT CLAUDE_RELAY_EXHAUSTED_TTL CLAUDE_RELAY_CAPTURE_MAX_AGE BASH_ENV ENV || true
+unset CLAUDE_RELAY_WARN_AT CLAUDE_RELAY_HANDOFF_AT CLAUDE_RELAY_EXHAUSTED_TTL CLAUDE_RELAY_CAPTURE_MAX_AGE CLAUDE_RELAY_DEPTH CLAUDE_RELAY_MAX_DEPTH BASH_ENV ENV || true
 mkdir -p "$HOME" "$XDG_CONFIG_HOME/claude-relay" "$XDG_STATE_HOME" "$TMPDIR" "$SANDBOX/fake" "$CLAUDE_PROFILES_ROOT/a" "$CLAUDE_PROFILES_ROOT/b" "$CLAUDE_PROFILES_ROOT/c" "$SANDBOX/project space"
 export PATH="$SANDBOX/fake:$PATH" CLAUDE_RELAY_CLAUDE_BIN="$SANDBOX/fake/claude" FAKE_LOG="$SANDBOX/launch.json"
 # Shebangs and child shells use the same Bash as this suite (including 3.2).
@@ -15,7 +15,7 @@ ln -s "$BASH" "$SANDBOX/fake/bash"
 cat > "$CLAUDE_RELAY_CLAUDE_BIN" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
-jq -n --arg cwd "$PWD" --arg config "$CLAUDE_CONFIG_DIR" --arg nested "${CLAUDECODE-}" --arg child "${CLAUDE_CODE_CHILD_SESSION-unset}" --arg auth "${ANTHROPIC_API_KEY-}${ANTHROPIC_AUTH_TOKEN-}${CLAUDE_CODE_OAUTH_TOKEN-}${CLAUDE_CODE_USE_BEDROCK-}${CLAUDE_CODE_USE_VERTEX-}${CLAUDE_CODE_USE_FOUNDRY-}${ANTHROPIC_BASE_URL-}" --args '{cwd:$cwd,config:$config,nested:$nested,child:$child,auth:$auth,args:$ARGS.positional}' -- "$@" > "$FAKE_LOG"
+jq -n --arg depth "${CLAUDE_RELAY_DEPTH-unset}" --arg cwd "$PWD" --arg config "$CLAUDE_CONFIG_DIR" --arg nested "${CLAUDECODE-}" --arg child "${CLAUDE_CODE_CHILD_SESSION-unset}" --arg auth "${ANTHROPIC_API_KEY-}${ANTHROPIC_AUTH_TOKEN-}${CLAUDE_CODE_OAUTH_TOKEN-}${CLAUDE_CODE_USE_BEDROCK-}${CLAUDE_CODE_USE_VERTEX-}${CLAUDE_CODE_USE_FOUNDRY-}${ANTHROPIC_BASE_URL-}" --args '{depth:$depth,cwd:$cwd,config:$config,nested:$nested,child:$child,auth:$auth,args:$ARGS.positional}' -- "$@" > "$FAKE_LOG"
 FAKE
 # Never invoke a real desktop notifier from this suite.
 for notifier in osascript notify-send; do
@@ -259,7 +259,7 @@ check test ! -e "$HOME/.local/bin/claude-relay"
 write_pool
 # Test without desktop notification programs or claude-profile on PATH.
 mkdir -p "$SANDBOX/minimal-bin"
-for utility in bash jq cat dirname basename chmod cp mkdir mktemp mv rm readlink find ln cmp; do
+for utility in bash jq cat dirname basename chmod cp mkdir mktemp mv rm readlink find ln cmp cksum; do
   ln -s "$(command -v "$utility")" "$SANDBOX/minimal-bin/$utility"
 done
 ln -s "$CLAUDE_RELAY_CLAUDE_BIN" "$SANDBOX/minimal-bin/claude"
@@ -277,8 +277,8 @@ check test ! -s "$SANDBOX/err"
 # Plain installation and claude-profile routing remain isolated to this HOME.
 mkdir -p "$HOME/.claude"
 PATH="$SANDBOX/minimal-bin" relay install > "$SANDBOX/install" 2> "$SANDBOX/err"
-check test -f "$HOME/.claude/settings.json"
-check equals "$(cut -f1 "$XDG_CONFIG_HOME/claude-relay/pool")" default
+check test -f "$CLAUDE_PROFILES_ROOT/a/settings.json"
+check equals "$(cut -f1 "$XDG_CONFIG_HOME/claude-relay/pool")" "$(printf 'a\nb\nc')"
 PATH="$SANDBOX/minimal-bin" relay uninstall > "$SANDBOX/uninstall"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/fake/claude-profile"
 chmod +x "$SANDBOX/fake/claude-profile"
@@ -298,10 +298,12 @@ rm "$SANDBOX/fake/jq"
 rm "$XDG_CONFIG_HOME/claude-relay/installed-settings.json"
 relay install --profiles a,b --settings "$SETTINGS" > "$SANDBOX/install" 2> "$SANDBOX/err"
 check json_is "$XDG_CONFIG_HOME/claude-relay/installed-settings.json" 'all(.[]; (.statusLine.command // "" | contains("claude-relay")) | not)'
-# shellcheck source=tests/round2.sh
-source "$ROOT/tests/round2.sh"
-# shellcheck source=tests/round4.sh
-source "$ROOT/tests/round4.sh"
+# shellcheck source=tests/exhaustion-and-hooks.sh
+source "$ROOT/tests/exhaustion-and-hooks.sh"
+# shellcheck source=tests/captures-and-migration.sh
+source "$ROOT/tests/captures-and-migration.sh"
+# shellcheck source=tests/release.sh
+source "$ROOT/tests/release.sh"
 # Report timings for the common, non-warning path without imposing a flaky CI limit.
 usage a 20
 for operation in statusline guard; do

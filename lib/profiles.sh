@@ -1,14 +1,66 @@
 #!/usr/bin/env bash
+# Project only the two permitted login metadata fields, never whole auth data.
+account_metadata() {
+  local file="$1/.claude.json"
+  if [ -f "$file" ] && [ ! -L "$file" ]; then
+    jq -cse '
+      if length!=1 then error("Invalid metadata") else .[0] end |
+      {email:(.oauthAccount.emailAddress | if type=="string" then . else null end),
+       organization:(.oauthAccount.organizationName | if type=="string" then . else null end)}' "$file" 2>/dev/null || printf '{}\n'
+  else printf '{}\n'; fi
+}
+detect_profiles() {
+  local dir name base account rows='[]' in_pool i suffix reserved
+  POOL_COUNT=0 POOL_NAMES=() POOL_DIRS=()
+  [ ! -f "$POOL_FILE" ] || load_pool
+  reserved=$(printf '%s\n' ${POOL_NAMES[@]+"${POOL_NAMES[@]}"} | jq -Rsc 'split("\n")|map(select(length>0))')
+  for dir in "$HOME/.claude" "${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"/* "${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"/.[!.]* "${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"/..?* "${CLAUDE_CONFIG_DIR:-}"; do
+    [ -n "$dir" ] && [ -d "$dir" ] || continue
+    dir=$(resolve_dir "$dir") || continue
+    case "$dir" in *$'\t'*|*$'\n'*) continue ;; esac
+    if printf '%s' "$rows" | jq -e --arg d "$dir" 'any(.[]; .path==$d)' >/dev/null; then continue; fi
+    in_pool=false i=0 name=''
+    while [ "$i" -lt "$POOL_COUNT" ]; do
+      if [ "$dir" = "${POOL_DIRS[$i]}" ]; then in_pool=true; name=${POOL_NAMES[$i]}; break; fi
+      i=$((i+1))
+    done
+    if [ -z "$name" ]; then
+      if [ "$dir" = "$(resolve_dir "$HOME/.claude" || true)" ]; then name=default
+      else name=$(printf '%s' "${dir##*/}" | jq -Rr 'gsub("[^a-zA-Z0-9._-]";"-") | sub("^[^a-zA-Z0-9]+";"") | if .=="" then "profile" else . end'); fi
+      base=$name suffix=1
+      while printf '%s' "$rows" | jq -e --arg n "$name" --argjson reserved "$reserved" 'any(.[]; .name==$n) or (($reserved|index($n))!=null)' >/dev/null; do
+        suffix=$((suffix+1)); name="$base-$suffix"
+      done
+    fi
+    account=$(account_metadata "$dir")
+    rows=$(jq -cn --argjson rows "$rows" --argjson a "$account" --arg n "$name" --arg d "$dir" --argjson pooled "$in_pool" \
+      '$rows+[{name:$n,path:$d,logged_in:(($a.email // "")|length>0),email:($a.email // null),organization:($a.organization // null),in_pool:$pooled}]')
+  done
+  printf '%s\n' "$rows"
+}
+detect_table() {
+  printf 'NAME\tPATH\tLOGGED IN\tEMAIL\tORGANIZATION\tIN POOL\n'
+  jq -r '.[] | [.name,.path,.logged_in,.email,.organization,.in_pool] | @tsv'
+}
+cmd_detect() {
+  case "${1:-}" in
+    '') [ "$#" -eq 0 ] || die 'Usage: detect [--json]'; detect_profiles | detect_table ;;
+    --json) [ "$#" -eq 1 ] || die 'Usage: detect [--json]'; detect_profiles | jq . ;;
+    *) die 'Usage: detect [--json]' ;;
+  esac
+}
 captures() {
   local profile=$1 file found=false
+  [ ! -L "$STATE_DIR/usage" ] && [ ! -L "$STATE_DIR/usage/$profile" ] || return 1
   # The presence of session files disables legacy fallback, even if corrupt.
   {
     for file in "$STATE_DIR/usage/$profile/"*.json; do
       [ -f "$file" ] || continue
       found=true
+      [ ! -L "$file" ] || continue
       jq -ce 'select(type=="object")' "$file" 2>/dev/null || true
     done
-    if ! $found && [ -f "$STATE_DIR/usage/$profile.json" ]; then
+    if ! $found && [ -f "$STATE_DIR/usage/$profile.json" ] && [ ! -L "$STATE_DIR/usage/$profile.json" ]; then
       jq -ce 'select(type=="object")' "$STATE_DIR/usage/$profile.json" 2>/dev/null || true
     fi
   } | jq -s .
@@ -74,9 +126,7 @@ cmd_status() {
     name=${POOL_NAMES[$i]} dir=${POOL_DIRS[$i]}
     m=$(measurement "$name") account='{}'
     # Only these two non-secret fields leave jq; never dump the auth file.
-    if [ -f "$dir/.claude.json" ]; then
-      account=$(jq -c '{email:(.oauthAccount.emailAddress // null),organization:(.oauthAccount.organizationName // null)}' "$dir/.claude.json" 2>/dev/null) || account='{}'
-    fi
+    account=$(account_metadata "$dir")
     rows=$(jq -cn --argjson rows "$rows" --argjson m "$m" --argjson account "$account" --arg name "$name" --arg dir "$dir" --arg current "$CURRENT_PROFILE" '$rows + [$m + {profile:$name,config_dir:$dir,current:($name==$current),account:$account}]')
     i=$((i+1))
   done
@@ -123,6 +173,9 @@ launch_claude() {
   CLAUDE_CONFIG_DIR=$(profile_dir "$profile")
   [ -d "$CLAUDE_CONFIG_DIR" ] || die "Directory does not exist: $CLAUDE_CONFIG_DIR"
   export CLAUDE_CONFIG_DIR
+  valid_depth "${CLAUDE_RELAY_DEPTH:-0}" || die 'Invalid CLAUDE_RELAY_DEPTH.'
+  CLAUDE_RELAY_DEPTH=$((10#${CLAUDE_RELAY_DEPTH:-0}+1))
+  export CLAUDE_RELAY_DEPTH
   unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY ANTHROPIC_BASE_URL
   # The relay forwarder intentionally launches a separate Claude process.
   unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION
@@ -130,6 +183,8 @@ launch_claude() {
 }
 cmd_run() {
   local profile='' mode='' excludes=() count=0 separator=false
+  valid_depth "${CLAUDE_RELAY_DEPTH:-0}" || die 'Invalid CLAUDE_RELAY_DEPTH.'
+  [ "${CLAUDE_RELAY_DEPTH:-0}" -lt "$MAX_DEPTH" ] || die "Recursion refused: CLAUDE_RELAY_DEPTH reached max_depth=$MAX_DEPTH."
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --profile) need_value "$@"; [ -z "$mode" ] || die '--profile and --pick are mutually exclusive.'; mode=profile; profile=$2; shift 2 ;;

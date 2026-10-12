@@ -1,4 +1,4 @@
-# claude-relay — specification v0.1
+# claude-relay — specification v0.2.0
 
 A tool for using multiple Claude Code accounts (profiles with different
 `CLAUDE_CONFIG_DIR` values) without losing work when one runs out of quota:
@@ -35,7 +35,9 @@ Live observations from 2026-10-12 with Claude Code 2.1.296 are included below.
 - Two live sessions on the same account reported `seven_day.used_percentage`
   values of **14 and 2 for the same `resets_at`**. The cause is unexplained;
   a per-model weekly bucket is a hypothesis, not a confirmed explanation.
-  Relay records model IDs and chooses conservatively across sessions.
+  Later, 15 sessions sharing a weekly reset showed four current sessions at
+  2%, and eleven idle sessions without a five-hour window at 7–94%. Relay
+  records model IDs and prefers current captures to avoid stale counter values.
 - Hook input (JSON on stdin) includes `session_id`, `transcript_path`, `cwd`,
   `hook_event_name`. Hooks inherit the environment, so `CLAUDE_CONFIG_DIR`
   identifies the running profile (defaulting to `~/.claude` when unset).
@@ -75,10 +77,16 @@ Live observations from 2026-10-12 with Claude Code 2.1.296 are included below.
   outside the pool or there is no data.
 - Never read, copy or print credentials (`.credentials.json`, keychain,
   the complete `.claude.json`). Only read `oauthAccount.emailAddress` and
-  `oauthAccount.organizationName` from `.claude.json` for `status`.
+  `oauthAccount.organizationName` from `.claude.json` for `status` and `detect`.
 - Files containing transcripts or handoffs: `umask 077`, mode 600/700.
 - Atomic writes (temporary file + `mv`).
-- No hook may break the session: on any error, exit 0 with no output.
+- No hook or statusline may break the session: on any error, exit 0 with no
+  output. Require one JSON object before side effects or wrapper execution.
+- Never evaluate event/transcript/account data as shell code. The saved
+  statusline command is trusted local configuration and receives stdin only.
+  Validate names and transcript containment, reject symlinked write paths,
+  keep relay directories at 700 and files at 600, and preserve unrelated
+  settings-directory permissions. See SECURITY.md for the trust boundary.
 - No network dependencies.
 
 ## Repository structure
@@ -89,9 +97,18 @@ lib/                     shared functions (sourced by bin/)
 agents/relay.md           wrapper subagent (optional at installation)
 install.sh               shortcut: bin/claude-relay install "$@"
 tests/run.sh             pure Bash suite, no extra dependencies
-tests/round2.sh           exhaustion, hook and launch regressions
-tests/round4.sh           multi-session captures and installation migration
+tests/exhaustion-and-hooks.sh           exhaustion, hook and launch regressions
+tests/captures-and-migration.sh           multi-session captures and installation migration
+tests/release.sh          discovery, upgrades, forwarding and boundary regressions
 tests/fixtures/           sample JSON (statusline, hooks)
+AGENTS.md                canonical agent installation guide
+CLAUDE.md                install/development entry points
+VERSION                  CLI release version
+SECURITY.md              local threat model and private reporting
+LICENSE                  MIT license
+assets/                  supplied banner and logos
+.github/workflows/test.yml macOS/Linux tests with pinned checkout action
+docs/USAGE.md            full operational reference
 README.md                in English: purpose, installation, usage, limits, terms
 docs/SPEC.md             this file
 ```
@@ -102,10 +119,10 @@ docs/SPEC.md             this file
   `name<TAB>config_dir` line per profile, `#` comments. Order = tie-break priority.
 - Options: `${XDG_CONFIG_HOME:-~/.config}/claude-relay/config` (`key=value`):
   `warn_at=90`, `handoff_at=97`, `unknown_score=50`, `exhausted_ttl=3600`,
-  `capture_max_age=21600`, `wrapped_statusline=<cmd>`. Both age and TTL are
+  `capture_max_age=21600`, `max_depth=1`, `wrapped_statusline=<cmd>`. Both age and TTL are
   positive integers in seconds.
   Environment variables `CLAUDE_RELAY_WARN_AT`, `CLAUDE_RELAY_HANDOFF_AT` and
-  `CLAUDE_RELAY_EXHAUSTED_TTL`, plus `CLAUDE_RELAY_CAPTURE_MAX_AGE`, override
+  `CLAUDE_RELAY_EXHAUSTED_TTL`, plus `CLAUDE_RELAY_CAPTURE_MAX_AGE` and `CLAUDE_RELAY_MAX_DEPTH`, override
   their corresponding keys.
 - State: `${XDG_STATE_HOME:-~/.local/state}/claude-relay/`:
   `usage/<profile>/<session_id>.json`, the compatibility copy
@@ -121,12 +138,17 @@ docs/SPEC.md             this file
 
 Read per-session captures when any exist; only fall back to the legacy
 `usage/<profile>.json` when none exist (an empty directory is not a capture).
-Consider captures whose `captured_at >= now - capture_max_age`. If none are
-fresh, use only the newest capture of any age. For each window independently,
-discard windows with `resets_at <= now`; choose the greatest remaining
-`resets_at`, then the highest `used_percentage` on a tie. This conservative
-rule intentionally avoids understating conflicting reports. Do not combine
-an older reset period with the latest period or revive an expired window.
+First select fresh captures whose `captured_at >= now - capture_max_age`.
+A capture is **current** if it has a valid `five_hour` window with
+`resets_at > now`. If any fresh capture is current, measure the profile using
+only those current fresh captures, for both windows. This excludes idle
+sessions' stale weekly counters even when their weekly reset matches.
+Otherwise retain the previous rule: use all fresh captures, or only the newest
+capture of any age if none are fresh. For each window independently, discard
+windows with `resets_at <= now`; choose the greatest remaining `resets_at`, then
+the highest `used_percentage` on a tie. Never combine reset periods or revive
+an expired window. A current capture older than capture_max_age cannot displace
+fresh idle captures.
 
 `status --json` exposes `capture_count` (the number of captures considered,
 including captures whose windows have expired), and `session_id` and `model`
@@ -135,6 +157,15 @@ on each selected window. Missing provenance is `null`. `captured_at` and
 `known` is false, each window is `null`, and the score is `unknown_score`.
 Status, pick and guard use this same measurement. Exhaustion markers override
 its score as below.
+
+`claude-relay detect [--json]`
+: List existing candidate directories: `~/.claude`, every directory (including
+  hidden ones) in `${CLAUDE_PROFILES_ROOT:-~/.claude-profiles}`, and
+  `$CLAUDE_CONFIG_DIR` if set. Deduplicate resolved paths. JSON rows contain
+  `name`, `path`, `logged_in`, `email`, `organization`, `in_pool`. Login means
+  a nonempty email metadata field, not validated authentication. Missing or
+  malformed metadata is logged out. Preserve pool names; suggest safe unique
+  names otherwise. Do not read any other `.claude.json` fields.
 
 `claude-relay status [--json]`
 : Table: profile, account (email · org), 5 h %, 7 d %, each window's reset time
@@ -167,6 +198,11 @@ its score as below.
   authentication variables or `CLAUDECODE` / `CLAUDE_CODE_CHILD_SESSION`; this
   allows the separate process's transcripts to be saved. Also applies to
   `resume`. The binary is configurable with `CLAUDE_RELAY_CLAUDE_BIN` (for tests).
+  Stdin passes through unchanged. Before launch, `run` rejects inherited
+  `CLAUDE_RELAY_DEPTH >= max_depth` with a clear error; launch exports the current
+  depth plus one. `resume` resets depth to 0 before launch (child receives 1).
+  Depth/max_depth must be decimal integers from 0 through 2147483646; default
+  max_depth is 1 and `CLAUDE_RELAY_MAX_DEPTH` overrides config.
 
 `claude-relay handoff [--from P] [--to P|auto] [--session ID | --transcript PATH] [--cwd DIR] [--quiet] [--json]`
 : Copy the session transcript to the destination profile (`auto` = `pick
@@ -252,7 +288,10 @@ its score as below.
 : - Write the pool. `--profiles a,b` resolves each name to
     `${CLAUDE_PROFILES_ROOT:-~/.claude-profiles}/<name>` (must exist);
     `--profile name=dir` supports arbitrary paths. With no profiles specified,
-    use `default=~/.claude`.
+    reuse an existing pool and recorded settings targets. Otherwise detect
+    candidates and install the sole logged-in profile; if zero or several are
+    logged in, print the table, exit 2 and say
+    `choose with --profiles a,b or --profile name=dir`.
   - Symlink `~/.local/bin/claude-relay` → the repo's `bin/claude-relay` (warn if
     `~/.local/bin` is not on PATH).
   - Target settings: the supplied `--settings` paths; otherwise,
@@ -271,7 +310,15 @@ its score as below.
     restores that original, including its own refresh interval if any.
   - Back up to `settings.json.relay-backup-<ts>` before writing. Validate the
     resulting JSON before `mv`.
-  - `--with-agent` copies `agents/relay.md` to `~/.claude/agents/relay.md`.
+  - `--with-agent` copies `agents/relay.md` to `~/.claude/agents/relay.md`,
+    recording POSIX `cksum` in `agent.cksum`. Later installs also upgrade an
+    already recorded agent without requiring the flag. Accept an existing
+    copy matching either the record or current template; otherwise refuse
+    and explain how to move the edited file aside. Back up before replacing.
+    A no-profile upgrade also checks a pre-checksum agent: if it differs from
+    the current template, require moving it aside and reinstalling with
+    `--with-agent`; never silently retain an older unrecognized forwarder.
+    Uninstall removes the agent only when it matches the record.
   - `--dry-run` shows the diff and writes nothing.
 
 `claude-relay uninstall [--settings PATH]... [--purge]`
@@ -285,15 +332,18 @@ its score as below.
 : Check jq, Bash version, `claude` on PATH, a valid pool, settings with installed
   hooks, and whether each profile has usage data and how old it is.
 
-`claude-relay --version`, `claude-relay help [subcommand]`.
+`claude-relay --version` reads `VERSION` (0.2.0); `claude-relay help [subcommand]`.
 
 ## agents/relay.md
 
 Wrapper subagent (frontmatter `name: relay`, `tools: Bash`, `model: haiku`),
 acting as a forwarder: it does not investigate or solve the task, only forwards
 it in full with **one** Bash call to
-`claude-relay run --pick --exclude <current profile> -- -p "<task>" --output-format text`
-(current profile: `claude-relay status --json`). Read-only by default
+`claude-relay run --pick --exclude <current profile> -- -p --output-format text < "$file"`
+(current profile: `claude-relay status --json`). Refuse if `CLAUDE_RELAY_DEPTH`
+is set. Write the full task to a private `mktemp` file using a quoted heredoc
+with a random suffix absent from the task. Never interpolate task text into
+shell arguments. Delete the file on success or failure. Read-only by default
 (`--permission-mode plan`); if the task requires writing, `--permission-mode
 acceptEdits`. Tell the user that the child does not see the conversation (the
 task must be complete), that usage is charged to the selected account, and
@@ -309,10 +359,21 @@ Minimum cases:
   quota data is available; unchanged data retains `captured_at`; missing data
   preserves captures; old captures are pruned;
   outside the pool it does not write; with `wrapped_statusline` it appends output.
-- measurement: conflicting sessions choose latest reset then highest usage;
+- measurement: the anonymized 15-session regression chooses four current
+  sessions at weekly 2% and excludes eleven idle sessions at 7–94%; no false
+  guard warning; conflicting current sessions choose latest reset then highest usage;
   fresh captures exclude stale ones; stale-only fallback uses the newest;
   expired windows are ignored; JSON includes count and window provenance;
   legacy-only state remains readable; exhaustion still overrides the score.
+- onboarding: detect filters account metadata, includes config overrides,
+  deduplicates paths and marks pool membership; first install selects only a
+  single login; multiple/zero logins exit 2; upgrade reuses the pool/settings;
+  agent checksum ownership survives template changes and preserves user edits;
+  version comes from VERSION.
+- hardening: stdin reaches fake Claude unchanged, including hostile task text;
+  the forwarder cleans temporary files even on failure; depth config/env,
+  recursion rejection and resume reset; multi-document JSON rejected;
+  permissions and symlink destinations; shell-sensitive checkout paths.
 - install: no refreshInterval; migration is backed up and idempotent;
   uninstall restores unrelated original statusline settings.
 - pick: lowest score wins; no active windows = 50; >= 97 is
@@ -339,7 +400,7 @@ Minimum cases:
 - fake claude receives `CLAUDE_CODE_CHILD_SESSION` unset in both run and resume.
   The Team sample without `seven_day` is measured correctly.
 
-Run `bash tests/run.sh` and `/bin/bash tests/run.sh`: the previous 106 tests plus
+Run `bash tests/run.sh` and `/bin/bash tests/run.sh`: the previous 247 tests (adapted only for requested behavior changes) plus
 new regressions must pass. Run `shellcheck` if installed. The suite does not
 verify real Claude, trust prompts or headless statusline execution; those
 observations come from manual tests.
