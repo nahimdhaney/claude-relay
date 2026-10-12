@@ -231,17 +231,44 @@ cmd_task_path() {
   printf '%s\n' "$task"
 }
 
+# Forget forwarded sessions unused for 30 days. Malformed records are kept.
+prune_forwarded() {
+  local file
+  [ -d "$STATE_DIR/forwarded" ] && [ ! -L "$STATE_DIR/forwarded" ] || return 0
+  for file in "$STATE_DIR/forwarded/"*.json; do
+    [ -f "$file" ] && [ ! -L "$file" ] || continue
+    if [ "$(jq -r 'if (.last_used_at|type)=="number" and .last_used_at<(now-2592000) then "old" else "keep" end' "$file" 2>/dev/null || true)" = old ]; then
+      rm -f "$file"
+    fi
+  done
+}
 cmd_forward() (
-  local task='' mode=plan cleanup tasks parent
+  local task='' mode=plan cleanup tasks parent model='' resume='' session profile cwd record recorded updated allowed
+  local args=(-p --output-format text)
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --task-file) need_value "$@"; [ -z "$task" ] || die 'Only one task file is allowed.'; task=$(absolute_path "$2"); shift 2 ;;
       --write) mode=acceptEdits; shift ;;
+      --model)
+        need_value "$@"; [ -z "$model" ] || die 'Only one --model is allowed.'
+        valid_model "$2" || die 'Invalid --model alias: use letters, digits and . _ : [ ] - only.'
+        model=$2; shift 2 ;;
+      --continue)
+        need_value "$@"; [ -z "$resume" ] || die 'Only one --continue is allowed.'
+        # Checked before any path is built from it.
+        valid_session_id "$2" || die 'Invalid --continue session ID: expected a lowercase UUID.'
+        resume=$2; shift 2 ;;
       *) die "Unknown option: $1" ;;
     esac
   done
-  [ -n "$task" ] || die 'Usage: forward --task-file PATH [--write]'
+  [ -n "$task" ] || die 'Usage: forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID]'
   init_config
+  # Every configured source is validated, even when a higher one overrides it.
+  # Precedence: flag, then environment, then config; empty = profile default.
+  [ -z "${CLAUDE_RELAY_CHILD_MODEL:-}" ] || valid_model "$CLAUDE_RELAY_CHILD_MODEL" ||
+    die 'Invalid CLAUDE_RELAY_CHILD_MODEL: use letters, digits and . _ : [ ] - only.'
+  [ -z "$CHILD_MODEL" ] || valid_model "$CHILD_MODEL" || die 'Invalid child_model in config: use letters, digits and . _ : [ ] - only.'
+  model=${model:-${CLAUDE_RELAY_CHILD_MODEL:-$CHILD_MODEL}}
   [ ! -L "$STATE_DIR" ] && [ ! -L "$STATE_DIR/tasks" ] || die 'Symlink task directory rejected.'
   tasks=$(resolve_dir "$STATE_DIR/tasks") || die 'Task directory does not exist; use task-path.'
   parent=$(resolve_dir "${task%/*}") || die 'Task directory does not exist.'
@@ -251,17 +278,55 @@ cmd_forward() (
   [ ! -L "$task" ] && [ -f "$task" ] && [ -O "$task" ] || die 'Task must be an owned regular file, not a symlink.'
   [ "${CLAUDE_RELAY_DEPTH+x}" != x ] || die 'Recursion refused: CLAUDE_RELAY_DEPTH is set.'
   [ "$MAX_DEPTH" -gt 0 ] || die 'Forwarding disabled by max_depth=0.'
+  cwd=$(resolve_dir "$PWD") || die 'The current directory cannot be resolved.'
   load_pool
-  [ -n "$CURRENT_PROFILE" ] || die 'Cannot identify the current profile in the pool.'
-  choose_profile "$CURRENT_PROFILE"
+  [ ! -L "$STATE_DIR/forwarded" ] || die "Symlink directory rejected: $STATE_DIR/forwarded"
+  prune_forwarded
+  if [ -n "$resume" ]; then
+    # Continue in the recorded profile and directory; never pick another one.
+    record="$STATE_DIR/forwarded/$resume.json"
+    [ -f "$record" ] && [ ! -L "$record" ] || die "Unknown forwarded session: $resume. Only sessions created by forward in the last 30 days can be continued."
+    profile=$(jq -r '.profile | strings' "$record" 2>/dev/null) || profile=''
+    recorded=$(jq -r '.cwd | strings' "$record" 2>/dev/null) || recorded=''
+    [ -n "$profile" ] && [ -n "$recorded" ] && safe_name "$profile" || die "Invalid forwarded session record: $record"
+    profile_dir "$profile" >/dev/null
+    [ "$cwd" = "$recorded" ] || die "Session $resume belongs to another directory: run forward --continue from $recorded"
+    session=$resume
+    args+=(--resume "$session")
+  else
+    [ -n "$CURRENT_PROFILE" ] || die 'Cannot identify the current profile in the pool.'
+    choose_profile "$CURRENT_PROFILE"
+    profile=$PICKED
+    # A known ID lets the caller continue this child later without parsing output.
+    session=$(new_session_id)
+    valid_session_id "$session" || die 'Could not generate a session ID.'
+    record="$STATE_DIR/forwarded/$session.json"
+    [ ! -e "$record" ] && [ ! -L "$record" ] || die 'Generated session ID already recorded; retry.'
+    args+=(--session-id "$session")
+  fi
+  [ -z "$model" ] || args+=(--model "$model")
+  # Tools the child may use without approval (claude --allowedTools syntax).
+  # It is an argv value, never shell code; only control characters are refused.
+  allowed=${CLAUDE_RELAY_CHILD_ALLOWED_TOOLS-$CHILD_ALLOWED_TOOLS}
+  case "$allowed" in *[[:cntrl:]]*) die 'Invalid child_allowed_tools: control characters are not allowed.' ;; esac
+  [ -z "$allowed" ] || args+=(--allowedTools "$allowed")
+  args+=(--permission-mode "$mode")
+  if [ -n "$resume" ]; then
+    updated=$(jq -c 'select(type=="object") | .last_used_at=(now|floor)' "$record" 2>/dev/null) || updated=''
+    [ -n "$updated" ] || die "Invalid forwarded session record: $record"
+  else
+    updated=$(jq -cn --arg s "$session" --arg p "$profile" --arg cwd "$cwd" \
+      '{session_id:$s,profile:$p,cwd:$cwd,created_at:(now|floor),last_used_at:(now|floor)}')
+  fi
   private_task_dir
   chmod 600 "$task"
   [ "$(file_mode "$task")" = 600 ] || die 'Task file must have mode 600.'
+  printf '%s\n' "$updated" | atomic_json "$record"
   # Cleanup begins only after all validation succeeds. Refusals retain input.
   printf -v cleanup 'rm -f %q' "$task"
   trap "$cleanup" EXIT
   trap 'exit 1' HUP INT TERM
-  printf 'claude-relay: profile %s\n' "$PICKED" >&2
+  printf 'claude-relay: profile %s, session %s\n' "$profile" "$session" >&2
   # The parent retains its cleanup trap while the child execs Claude.
-  (launch_claude "$PICKED" child -p --output-format text --permission-mode "$mode") < "$task"
+  (launch_claude "$profile" child "${args[@]}") < "$task"
 )

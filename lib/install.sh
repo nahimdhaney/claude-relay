@@ -22,10 +22,36 @@ backup_file() {
     chmod 600 "$backup"
   fi
 }
+# Agent backups live in private state: a copy beside relay.md in the agents
+# folder could be loaded as another agent definition.
+backup_agent() {
+  local file=$1 backup
+  [ ! -L "$file" ] || die "Symlink file rejected: $file"
+  if [ -f "$file" ]; then
+    private_dir "$STATE_DIR/backups"
+    backup=$(mktemp "$STATE_DIR/backups/${file##*/}.relay-backup-$(now_stamp).XXXXXX")
+    cp -p "$file" "$backup"
+    chmod 600 "$backup"
+  fi
+}
+# Move backups written by earlier releases next to relay.md. Only regular
+# files with the exact prefix are moved; symlinks stay where they are.
+migrate_agent_backups() {
+  local dir="$HOME/.claude/agents" file dest
+  [ -d "$dir" ] || return 0
+  for file in "$dir"/relay.md.relay-backup-*; do
+    [ -f "$file" ] && [ ! -L "$file" ] || continue
+    private_dir "$STATE_DIR/backups"
+    dest="$STATE_DIR/backups/${file##*/}"
+    if [ -e "$dest" ] || [ -L "$dest" ]; then dest=$(mktemp "$dest.XXXXXX"); fi
+    mv -f "$file" "$dest"
+    chmod 600 "$dest"
+  done
+}
 atomic_text() (
-  local target=$1 tmp
+  local target=$1 backup=${2:-backup_file} tmp
   prepare_file "$target"
-  backup_file "$target"
+  "$backup" "$target"
   tmp=$(mktemp "${target}.tmp.XXXXXX")
   trap 'rm -f "$tmp"' EXIT
   cat > "$tmp"
@@ -219,8 +245,9 @@ cmd_install() {
   while [ "$i" -lt "$settings_count" ]; do write_settings "${settings[$i]}" "${updates[$i]}"; i=$((i+1)); done
   mkdir -p "$HOME/.local/bin"
   [ -L "$link" ] || ln -s "$RELAY_BIN" "$link"
+  migrate_agent_backups
   if $agent; then
-    atomic_text "$agent_file" < "$RELAY_ROOT/agents/relay.md"
+    atomic_text "$agent_file" backup_agent < "$RELAY_ROOT/agents/relay.md"
     cksum < "$agent_file" | atomic_text "$agent_record"
   fi
   case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) printf 'Add %s/.local/bin to PATH.\n' "$HOME" >&2 ;; esac
@@ -264,15 +291,36 @@ cmd_uninstall() {
   file="$HOME/.claude/agents/relay.md"
   if [ -f "$file" ] && [ ! -L "$file" ] && [ -f "$CONFIG_DIR/agent.cksum" ] &&
     [ "$(cksum < "$file")" = "$(cat "$CONFIG_DIR/agent.cksum")" ]; then
-    backup_file "$file"
+    backup_agent "$file"
     rm -f "$file" "$CONFIG_DIR/agent.cksum"
   fi
   if $purge; then rm -rf "$CONFIG_DIR" "$STATE_DIR"; fi
   printf 'claude-relay uninstalled.\n'
 }
+# A symlinked CLAUDE.md is identified by its resolved target path, a regular
+# file by its POSIX cksum, and an absent file as none.
+instructions_identity() {
+  local path=$1 target dir sum hops=0
+  if [ -L "$path" ]; then
+    while [ -L "$path" ] && [ "$hops" -lt 40 ]; do
+      target=$(readlink "$path")
+      case "$target" in /*) path=$target ;; *) path="${path%/*}/$target" ;; esac
+      hops=$((hops+1))
+    done
+    dir=${path%/*}
+    if dir=$(resolve_dir "${dir:-/}"); then path="${dir%/}/${path##*/}"; fi
+    printf '%s\n' "$path"
+  elif [ -f "$path" ]; then
+    read -r sum _ < <(cksum < "$path")
+    printf 'cksum %s\n' "$sum"
+  else
+    printf 'none\n'
+  fi
+}
 cmd_doctor() {
   [ "$#" -eq 0 ] || die 'Usage: doctor'
   local failed=0 i=0 file m jq_version identities open_dirs first_open
+  local instructions first_instructions='' instructions_list='' instructions_differ=false
   jq_version=$(jq --version)
   printf 'jq: %s\nBash: %s\n' "$jq_version" "$BASH_VERSION"
   if [[ "$jq_version" =~ ^jq-([0-9]+)\.([0-9]+) ]] &&
@@ -303,8 +351,16 @@ cmd_doctor() {
           fi ;;
       esac
     fi
+    instructions=$(instructions_identity "${POOL_DIRS[$i]}/CLAUDE.md")
+    if [ "$i" -eq 0 ]; then first_instructions=$instructions
+    elif [ "$instructions" != "$first_instructions" ]; then instructions_differ=true; fi
+    instructions_list="$instructions_list${instructions_list:+, }${POOL_NAMES[$i]}=$instructions"
     i=$((i+1))
   done
+  # Informational only: a forwarded child follows its own profile's CLAUDE.md.
+  if $instructions_differ; then
+    printf 'Note: pool profiles read different CLAUDE.md instructions: %s\n' "$instructions_list"
+  fi
   if [ ! -f "$CONFIG_DIR/installed-settings.json" ] || ! jq -e 'type=="object" and length>0' "$CONFIG_DIR/installed-settings.json" >/dev/null 2>&1; then printf 'Settings: no installation recorded\n'; failed=1
   else
     while IFS= read -r file; do

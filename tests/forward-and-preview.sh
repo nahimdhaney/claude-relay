@@ -173,14 +173,14 @@ check json_is "$STATE/prune.json" '.at > now-60'
 
 # 6 and 8: Pasted install commands and release verification stay explicit.
 check test "$(grep -c '^set -e' "$ROOT/README.md" || true)" -eq 0
-check grep -Eq '^git clone .* && cd .* && git checkout v0.2.1 && ./install.sh --dry-run$' "$ROOT/README.md"
+check grep -Eq '^git clone .* && cd .* && git checkout v'"$(cat "$ROOT/VERSION")"' && ./install.sh --dry-run$' "$ROOT/README.md"
 for doc in SECURITY.md AGENTS.md; do
-  check grep -q 'git verify-tag v0.2.1' "$ROOT/$doc"
+  check grep -q "git verify-tag v$(cat "$ROOT/VERSION")" "$ROOT/$doc"
   check grep -q 'GitHub release notes' "$ROOT/$doc"
   check grep -Eq 'commit SHA|commit.*SHA' "$ROOT/$doc"
   check grep -q 'never.*main' "$ROOT/$doc"
 done
-check equals "$(cat "$ROOT/VERSION")" 0.2.1
+check equals "$(cat "$ROOT/VERSION")" 0.2.2
 
 # 7: Interactive launches clear inherited depth; print launches increment it.
 for depth in unset 0 99 invalid; do

@@ -7,7 +7,7 @@ trap 'rm -rf "$SANDBOX"' EXIT
 export HOME="$SANDBOX/home" XDG_CONFIG_HOME="$SANDBOX/config" XDG_STATE_HOME="$SANDBOX/state"
 export XDG_CACHE_HOME="$SANDBOX/cache" XDG_DATA_HOME="$SANDBOX/data" XDG_RUNTIME_DIR="$SANDBOX/runtime" TMPDIR="$SANDBOX/tmp"
 export CLAUDE_PROFILES_ROOT="$SANDBOX/profiles" CLAUDE_CONFIG_DIR="$SANDBOX/profiles/a"
-unset CLAUDE_RELAY_WARN_AT CLAUDE_RELAY_HANDOFF_AT CLAUDE_RELAY_EXHAUSTED_TTL CLAUDE_RELAY_CAPTURE_MAX_AGE CLAUDE_RELAY_DEPTH CLAUDE_RELAY_MAX_DEPTH BASH_ENV ENV || true
+unset CLAUDE_RELAY_WARN_AT CLAUDE_RELAY_HANDOFF_AT CLAUDE_RELAY_EXHAUSTED_TTL CLAUDE_RELAY_CAPTURE_MAX_AGE CLAUDE_RELAY_DEPTH CLAUDE_RELAY_MAX_DEPTH CLAUDE_RELAY_CHILD_MODEL CLAUDE_RELAY_CHILD_ALLOWED_TOOLS BASH_ENV ENV || true
 mkdir -p "$HOME" "$XDG_CONFIG_HOME/claude-relay" "$XDG_STATE_HOME" "$TMPDIR" "$SANDBOX/fake" "$CLAUDE_PROFILES_ROOT/a" "$CLAUDE_PROFILES_ROOT/b" "$CLAUDE_PROFILES_ROOT/c" "$SANDBOX/project space"
 export PATH="$SANDBOX/fake:$PATH" CLAUDE_RELAY_CLAUDE_BIN="$SANDBOX/fake/claude" FAKE_LOG="$SANDBOX/launch.json"
 # Shebangs and child shells use the same Bash as this suite (including 3.2).
@@ -306,6 +306,8 @@ source "$ROOT/tests/captures-and-migration.sh"
 source "$ROOT/tests/release.sh"
 source "$ROOT/tests/security-hardening.sh"
 source "$ROOT/tests/forward-and-preview.sh"
+# shellcheck source=tests/v022.sh
+source "$ROOT/tests/v022.sh"
 # Report timings for the common, non-warning path without imposing a flaky CI limit.
 usage a 20
 for operation in statusline guard; do

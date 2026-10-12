@@ -7,7 +7,7 @@ relay_help() {
     exhausted) printf 'exhausted <profile> [--for DURATION | --until EPOCH] [--clear]\nMark an account as exhausted (score 100); duration: 90m, 4h or 3600s. --clear removes the mark.\n' ;;
     run) printf 'run [--profile P | --pick] [--exclude P]... -- <claude args>\nLaunch claude without inherited authentication variables. With no selector, use the current profile.\n' ;;
     task-path) printf 'task-path\nPrint a fresh path in the private relay tasks directory without creating the file; prune tasks older than one day.\n' ;;
-    forward) printf 'forward --task-file PATH [--write]\nForward a task-path file to another profile; deletes it after validation and child execution. --write enables approved edits.\n' ;;
+    forward) printf 'forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID]\nForward a task-path file to another profile; deletes it after validation and child execution. --write enables approved edits.\n--model selects the child model (else CLAUDE_RELAY_CHILD_MODEL, then child_model). Stderr reports the profile and session ID;\n--continue resumes a session forward created, in its recorded profile and from its recorded directory.\nchild_allowed_tools (or CLAUDE_RELAY_CHILD_ALLOWED_TOOLS) is passed to the child as --allowedTools.\n' ;;
     handoff) printf 'handoff [--from P] [--to P|auto] [--session ID | --transcript PATH] [--cwd DIR] [--quiet] [--json]\nCopy the session and subagents; default to the most recent session for the cwd.\n' ;;
     resume) printf 'resume [--last | --session ID] [--to P|auto]\nCopy if needed and resume in the original cwd. With no selector, use --last.\n' ;;
     statusline) printf 'statusline\nRead JSON from stdin, save rate_limits and display quota usage; never fails.\n' ;;

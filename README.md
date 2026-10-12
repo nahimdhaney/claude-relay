@@ -10,7 +10,7 @@ Tell your coding agent: **Install https://github.com/nahimdhaney/claude-relay**
 Or, with Git, Bash 3.2+, jq 1.6+ and Claude Code already signed in:
 
 ```bash
-git clone https://github.com/nahimdhaney/claude-relay.git "$HOME/.local/share/claude-relay" && cd "$HOME/.local/share/claude-relay" && git checkout v0.2.1 && ./install.sh --dry-run
+git clone https://github.com/nahimdhaney/claude-relay.git "$HOME/.local/share/claude-relay" && cd "$HOME/.local/share/claude-relay" && git checkout v0.2.2 && ./install.sh --dry-run
 ```
 
 Only after reviewing the preview, run `./install.sh`. Multiple logins require an explicit
@@ -32,6 +32,9 @@ claude-relay doctor
 - Warns at 90% and asks the model to write a handoff at 97%.
 - Copies the conversation and subagent transcripts to a profile you selected.
 - Resumes in the original directory when you run the command in your terminal.
+- Optionally forwards a self-contained task to another account through the `relay` subagent.
+
+Diagrams and details: [How claude-relay works](docs/HOW-IT-WORKS.md).
 
 ## Limitations
 

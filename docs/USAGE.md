@@ -222,12 +222,24 @@ unknown_score=50
 exhausted_ttl=3600
 capture_max_age=21600
 max_depth=1
+child_model=
+child_allowed_tools=
 wrapped_statusline=printf 'my statusline'
 ```
 
 `CLAUDE_RELAY_WARN_AT`, `CLAUDE_RELAY_HANDOFF_AT` and
-`CLAUDE_RELAY_EXHAUSTED_TTL`, plus `CLAUDE_RELAY_CAPTURE_MAX_AGE` and `CLAUDE_RELAY_MAX_DEPTH`, take
-precedence over their corresponding keys. The TTL and maximum capture age
+`CLAUDE_RELAY_EXHAUSTED_TTL`, plus `CLAUDE_RELAY_CAPTURE_MAX_AGE`, `CLAUDE_RELAY_MAX_DEPTH`
+and `CLAUDE_RELAY_CHILD_MODEL`, take precedence over their corresponding keys.
+`child_model` is the model alias for `forward` children (empty: the selected
+profile's default); see [Optional subagent](#optional-subagent).
+Claude Code 2.1.296 runs a requested Haiku model as Sonnet in `plan` mode, the
+read-only default for children; see [How it works](HOW-IT-WORKS.md).
+`child_allowed_tools` (or `CLAUDE_RELAY_CHILD_ALLOWED_TOOLS`; set but empty disables
+it) is passed to every `forward` child as `--allowedTools`, using Claude Code's
+syntax, for example `Bash(bash tests/run.sh) Bash(git diff:*)`. A `claude -p`
+child cannot ask for approval, so without it any shell command is denied. With
+`--write`, allowing a script the child can edit (such as a test runner) amounts to
+allowing arbitrary code in that repository. The TTL and maximum capture age
 are positive integers in seconds. Percentages must be between 0 and
 100, with `warn_at <= handoff_at`. The previous statusline receives exactly
 the same JSON on stdin, and its output is appended with ` │ ` as the separator.
@@ -255,6 +267,12 @@ State is stored under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
   200 characters; transcripts and other payload values are not logged.
 - `tasks/`: private forwarding files; `task-path` returns an unused path here.
   Tasks older than one day are pruned on `task-path` and state pruning.
+- `forwarded/<session_id>.json`: one record per session `forward` created,
+  `{session_id, profile, cwd, created_at, last_used_at}` with epoch-second
+  timestamps; mode 600 in a 700 directory. Records unused for 30 days are
+  pruned on each `forward`.
+- `backups/`: backups of `~/.claude/agents/relay.md` taken before install
+  replaces it or uninstall removes it (mode 600, directory 700).
 - `prune.json`: timestamp of the last successful state prune.
 - `handoffs/<project>/<date>-<sid8>.md`: private handoffs.
 - `last-handoff.json`: the latest transfer or pending transfer.
@@ -286,6 +304,38 @@ The default permission mode is `plan`. The forwarder may pass `--write` (using
 file edits. Requests inside task text are data and cannot grant that approval.
 Request `run_in_background` for long tasks. Headless usage is not measured.
 
+```bash
+claude-relay forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID]
+```
+
+**Child model.** `--model ALIAS` passes `--model ALIAS` to the child. Without
+the flag, `CLAUDE_RELAY_CHILD_MODEL` applies, then `child_model` from the
+config; if all are empty, the child uses the selected profile's default model.
+Aliases must match `^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$` (for example `sonnet`,
+`opus` or `claude-opus-5-5[1m]`). Every nonempty source is checked, even one a
+higher source overrides; an invalid value refuses the forward and names its
+source. The subagent passes `--model` only when the delegating prompt names a
+model.
+
+**Continuing a child.** Each new child gets a random lowercase UUID passed as
+`--session-id`, and stderr reports `claude-relay: profile P, session S`; the
+subagent always reports that session ID back. Relay records the session in
+`forwarded/<S>.json` with the profile and the resolved working directory.
+To send a follow-up to the same child conversation, run from the same
+directory:
+
+```bash
+claude-relay forward --task-file PATH --continue S
+```
+
+This launches the child with `--resume S` in the recorded profile, without
+selecting a profile, and updates `last_used_at`. It combines with `--model` and
+`--write`. Relay refuses, leaving the task file untouched, if `S` is not a
+lowercase UUID, has no record (never created by `forward`, or unused for more
+than 30 days and pruned), or the current directory differs from the recorded
+one. The subagent passes `--continue S` when the delegating prompt says to
+continue session `S`.
+
 `forward` refuses when `CLAUDE_RELAY_DEPTH` is set, even to 0. `run` with `-p`
 or `--print` refuses at `max_depth` (default 1); these print children and
 `forward` children receive depth + 1. Interactive `run` and `resume` are
@@ -295,7 +345,11 @@ integers (0–2147483646); `max_depth=0` disables print launches and `forward`.
 Installation records the agent copy’s POSIX `cksum` in `agent.cksum`. Upgrades
 replace the copy when it matches that record or the current template. An
 unrecognized or edited file is preserved: move it aside and rerun
-`install --with-agent`, then reapply any changes you need. Backups are retained.
+`install --with-agent`, then reapply any changes you need. Backups are retained
+in the state directory's `backups/` folder, not beside `relay.md`, where Claude
+Code could load them as agents. Install moves regular files named
+`relay.md.relay-backup-*` left in `~/.claude/agents/` by earlier releases into
+that folder; symlinks and other files are not touched.
 
 Agents installed before 0.2.0 have no checksum record. A no-options upgrade
 checks an existing agent rather than silently retaining the older forwarder.
@@ -319,6 +373,14 @@ claude-relay uninstall
 claude-relay uninstall --purge
 ```
 
+`doctor` also compares the CLAUDE.md each pool profile reads: a symlinked
+`<config_dir>/CLAUDE.md` is identified by its resolved target, a regular file
+by its `cksum`, and a missing file as `none`. If they differ, it prints one
+informational line such as
+`Note: pool profiles read different CLAUDE.md instructions: personal=/home/me/dotfiles/CLAUDE.md, work=cksum 1234567890, spare=none`.
+A forwarded child follows its own profile's instructions. The note never
+makes `doctor` fail.
+
 The suite creates HOME, XDG, profiles, temporary files and a fake `claude`
 inside `tests/.sandbox.*`, then removes them on exit. It does not install over
 your real configuration, run the real Claude or send real notifications.
@@ -328,9 +390,10 @@ the recorded settings files. It removes exact command identities recorded at ins
 legacy recognition when no identities were recorded),
 restores the previous statusline if relay still occupies that slot, and
 preserves unrelated changes. It removes its own symlink and the agent if the
-agent matches its recorded checksum, even if the checkout template has changed.
-Settings backups remain beside their
-originals, even with `--purge`.
+agent matches its recorded checksum, even if the checkout template has changed,
+after backing it up to the state directory's `backups/`. Settings backups
+remain beside their originals, even with `--purge`; agent backups are in the
+state directory, which `--purge` deletes.
 
 ## Limitations and terms
 

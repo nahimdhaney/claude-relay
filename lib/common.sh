@@ -15,7 +15,7 @@ init_config() {
   CONFIG_DIR="$(absolute_path "${XDG_CONFIG_HOME:-$HOME/.config}")/claude-relay"
   STATE_DIR="$(absolute_path "${XDG_STATE_HOME:-$HOME/.local/state}")/claude-relay"
   POOL_FILE="$CONFIG_DIR/pool"
-  WARN_AT=90 HANDOFF_AT=97 UNKNOWN_SCORE=50 EXHAUSTED_TTL=3600 CAPTURE_MAX_AGE=21600 MAX_DEPTH=1 WRAPPED_STATUSLINE=
+  WARN_AT=90 HANDOFF_AT=97 UNKNOWN_SCORE=50 EXHAUSTED_TTL=3600 CAPTURE_MAX_AGE=21600 MAX_DEPTH=1 WRAPPED_STATUSLINE= CHILD_MODEL= CHILD_ALLOWED_TOOLS=
   local key value
   if [ -f "$CONFIG_DIR/config" ]; then
     while IFS='=' read -r key value || [ -n "$key" ]; do
@@ -25,6 +25,9 @@ init_config() {
         exhausted_ttl) EXHAUSTED_TTL=$value ;;
         capture_max_age) CAPTURE_MAX_AGE=$value ;;
         max_depth) MAX_DEPTH=$value ;;
+        # Validated by forward, its only consumer, so other commands keep working.
+        child_model) CHILD_MODEL=$value ;;
+        child_allowed_tools) CHILD_ALLOWED_TOOLS=$value ;;
       esac
     done < "$CONFIG_DIR/config"
   fi
@@ -55,6 +58,26 @@ init_config() {
 valid_depth() {
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
   [ "${#1}" -le 10 ] && [ "$1" -le 2147483646 ]
+}
+# Model aliases become a child argument: letters, digits and . _ : [ ] - only.
+# A leading ] in the bracket expression is literal; a variable keeps Bash 3.2
+# from parsing the brackets itself.
+valid_model() {
+  local pattern='^[A-Za-z0-9][][A-Za-z0-9._:-]*$'
+  [[ "$1" =~ $pattern ]]
+}
+# Session IDs are used in state paths: accept only a lowercase UUID shape.
+valid_session_id() {
+  [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+}
+# Lowercase random (version 4) UUID without uuidgen; $RANDOM is only a fallback.
+new_session_id() {
+  local hex='' variant
+  if [ -r /dev/urandom ]; then hex=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null) || hex=''; fi
+  hex=${hex//[!0-9a-f]/}
+  while [ "${#hex}" -lt 32 ]; do hex=$hex$(printf '%04x' "$RANDOM"); done
+  variant=$(printf '%x' $(( (16#${hex:16:1} & 3) | 8 )))
+  printf '%s-%s-4%s-%s%s-%s\n' "${hex:0:8}" "${hex:8:4}" "${hex:13:3}" "$variant" "${hex:17:3}" "${hex:20:12}"
 }
 # Relay-owned trees must not redirect writes through symlinks. Only tighten
 # their directories, never the user's HOME or XDG parents.
