@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Sourced by the CLI, which enables strict mode and umask 077.
+die() { printf 'claude-relay: %s\n' "$*" >&2; exit 1; }
+need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "Falta valor para $1"; }
+safe_name() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; }
+absolute_path() {
+  case "$1" in /*) printf '%s\n' "$1" ;; '~') printf '%s\n' "$HOME" ;; '~/'*) printf '%s/%s\n' "$HOME" "${1#\~/}" ;; *) printf '%s/%s\n' "$PWD" "$1" ;; esac
+}
+resolve_dir() (
+  local path=$1
+  case "$path" in /*) ;; *) path=$(absolute_path "$path") ;; esac
+  cd -P "$path" 2>/dev/null && pwd -P
+)
+init_config() {
+  CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-relay"
+  STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay"
+  POOL_FILE="$CONFIG_DIR/pool"
+  WARN_AT=90 HANDOFF_AT=97 UNKNOWN_SCORE=50 WRAPPED_STATUSLINE=
+  local key value
+  if [ -f "$CONFIG_DIR/config" ]; then
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+      case "$key" in
+        warn_at) WARN_AT=$value ;; handoff_at) HANDOFF_AT=$value ;;
+        unknown_score) UNKNOWN_SCORE=$value ;; wrapped_statusline) WRAPPED_STATUSLINE=$value ;;
+      esac
+    done < "$CONFIG_DIR/config"
+  fi
+  WARN_AT=${CLAUDE_RELAY_WARN_AT:-$WARN_AT}
+  HANDOFF_AT=${CLAUDE_RELAY_HANDOFF_AT:-$HANDOFF_AT}
+  # Guard validates thresholds in its single jq pass. Statusline needs none.
+  if [ "${SAFE_WORKER:-false}" = true ]; then return; fi
+  jq -en --arg w "$WARN_AT" --arg h "$HANDOFF_AT" --arg u "$UNKNOWN_SCORE" '
+    [$w,$h,$u] | map(tonumber) | all(.>=0 and .<=100) and (.[0]<=.[1])' >/dev/null || die 'Umbrales inválidos (0–100, warn_at <= handoff_at).'
+}
+load_pool() {
+  POOL_NAMES=() POOL_DIRS=() POOL_COUNT=0 CURRENT_PROFILE=
+  local name dir extra resolved current i
+  [ -f "$POOL_FILE" ] || die "No existe el pool: $POOL_FILE; ejecuta install."
+  current=$(resolve_dir "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" || true)
+  while IFS=$'\t' read -r name dir extra || [ -n "$name" ]; do
+    case "$name" in ''|'#'*) continue ;; esac
+    safe_name "$name" || die "Nombre de perfil inválido: $name"
+    [ -n "$dir" ] && [ -z "$extra" ] || die "Línea inválida en pool: $name"
+    case "$dir" in /*) ;; *) dir=$(absolute_path "$dir") ;; esac
+    resolved=$(resolve_dir "$dir" || true)
+    [ -z "$resolved" ] || dir=$resolved
+    i=0
+    while [ "$i" -lt "$POOL_COUNT" ]; do
+      [ "${POOL_NAMES[$i]}" != "$name" ] && [ "${POOL_DIRS[$i]}" != "$dir" ] || die "Perfil o directorio duplicado: $name"
+      i=$((i+1))
+    done
+    POOL_NAMES[$POOL_COUNT]=$name POOL_DIRS[$POOL_COUNT]=$dir
+    POOL_COUNT=$((POOL_COUNT+1))
+    if [ -n "$current" ] && [ "$current" = "$dir" ]; then CURRENT_PROFILE=$name; fi
+  done < "$POOL_FILE"
+  [ "$POOL_COUNT" -gt 0 ] || die 'Pool vacío.'
+}
+profile_dir() {
+  local i=0
+  while [ "$i" -lt "$POOL_COUNT" ]; do
+    if [ "${POOL_NAMES[$i]}" = "$1" ]; then printf '%s\n' "${POOL_DIRS[$i]}"; return; fi
+    i=$((i+1))
+  done
+  die "Perfil desconocido: $1"
+}
+# All persisted JSON is checked before replacing an existing file.
+atomic_json() (
+  local target=$1 tmp
+  mkdir -p "$(dirname "$target")"
+  tmp=$(mktemp "${target}.tmp.XXXXXX")
+  trap 'rm -f "$tmp"' EXIT
+  cat > "$tmp"
+  jq -e 'type=="object" or type=="array"' "$tmp" >/dev/null
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$target"
+)
+project_name() { printf '%s' "$1" | jq -Rr 'gsub("[^a-zA-Z0-9]";"-")'; }
+now_stamp() { jq -nr 'now | strflocaltime("%Y%m%d-%H%M%S")'; }

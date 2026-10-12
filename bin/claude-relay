@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+# Resolve the installed symlink without GNU readlink -f.
+SELF=${BASH_SOURCE[0]}
+while [ -L "$SELF" ]; do
+  BASE=$(cd -P "$(dirname "$SELF")" && pwd)
+  SELF=$(readlink "$SELF")
+  case "$SELF" in /*) ;; *) SELF="$BASE/$SELF" ;; esac
+done
+RELAY_ROOT=$(cd -P "$(dirname "$SELF")/.." && pwd)
+RELAY_BIN="$RELAY_ROOT/bin/claude-relay"
+# An independent shell preserves errexit inside the worker. Buffer stdout so
+# even a late error cannot leak partial hook/statusline output into a session.
+case "${1:-help}" in
+  statusline|hook)
+    if OUTPUT=$("$BASH" "$RELAY_BIN" __safe "$@" 2>/dev/null); then
+      [ -z "$OUTPUT" ] || printf '%s\n' "$OUTPUT"
+    fi
+    exit 0 ;;
+  __safe) SAFE_WORKER=true; shift ;;
+esac
+# shellcheck source=lib/common.sh
+source "$RELAY_ROOT/lib/common.sh"
+command -v jq >/dev/null 2>&1 || { printf 'Falta jq >= 1.6.\n' >&2; exit 1; }
+init_config
+COMMAND=${1:-help}
+[ "$#" -eq 0 ] || shift
+case "$COMMAND" in
+  --version) printf 'claude-relay 0.1.0\n' ;;
+  help|--help|-h) source "$RELAY_ROOT/lib/help.sh"; relay_help "$@" ;;
+  status|pick|run) source "$RELAY_ROOT/lib/profiles.sh"; "cmd_$COMMAND" "$@" ;;
+  handoff|resume) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/handoff.sh"; "cmd_$COMMAND" "$@" ;;
+  statusline|hook) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/handoff.sh"; source "$RELAY_ROOT/lib/hooks.sh"; "cmd_$COMMAND" "$@" ;;
+  install|uninstall|doctor) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/install.sh"; "cmd_$COMMAND" "$@" ;;
+  *) die "Subcomando desconocido: $COMMAND. Usa claude-relay help." ;;
+esac

@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Copy each regular file atomically, preserving a newer destination.
+copy_private() (
+  local src=$1 dst=$2 tmp
+  [ ! -L "$src" ] && [ -f "$src" ] || die "Transcript no regular: $src"
+  [ ! -L "$dst" ] || die "Destino simbólico rechazado: $dst"
+  if [ -f "$dst" ] && [ "$dst" -nt "$src" ]; then chmod 600 "$dst"; exit 0; fi
+  mkdir -p "$(dirname "$dst")"
+  tmp=$(mktemp "${dst}.tmp.XXXXXX")
+  trap 'rm -f "$tmp"' EXIT
+  cp -p "$src" "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$dst"
+)
+copy_siblings() {
+  local src=$1 dst=$2 path relative
+  [ -d "$src" ] || return 0
+  [ ! -L "$src" ] && [ ! -L "$dst" ] || die 'Directorio de subagentes simbólico rechazado.'
+  # Validate before copying anything; never follow symlinks or credential files.
+  while IFS= read -r -d '' path; do
+    case "${path##*/}" in .credentials.json|.claude.json) die 'Archivo de autenticación inesperado en transcripts.' ;; esac
+    [ ! -L "$path" ] && { [ -d "$path" ] || [ -f "$path" ]; } || die "Archivo no regular: $path"
+  done < <(find "$src" -print0)
+  while IFS= read -r -d '' path; do
+    relative=${path#"$src"}
+    if [ -d "$path" ]; then
+      [ ! -L "$dst$relative" ] || die 'Destino simbólico rechazado.'
+      mkdir -p "$dst$relative"
+      chmod 700 "$dst$relative"
+    else copy_private "$path" "$dst$relative"; fi
+  done < <(find "$src" -print0)
+}
+# Reject symlinked destination ancestors rather than writing through them.
+check_destination_dirs() {
+  local path=$1 root=$2
+  while [ "$path" != "$root" ] && [ "$path" != / ]; do
+    [ ! -L "$path" ] || die "Destino simbólico rechazado: $path"
+    path=$(dirname "$path")
+  done
+}
+session_source() {
+  local from_dir=$1 session=$2 transcript=$3 cwd=$4 candidate project newest=''
+  if [ -n "$transcript" ]; then
+    [ ! -L "$transcript" ] || die 'Transcript simbólico rechazado.'
+    transcript="$(resolve_dir "$(dirname "$transcript")")/$(basename "$transcript")"
+    case "$transcript" in "$from_dir"/projects/*/*.jsonl) ;; *) die 'El transcript no pertenece al perfil de origen.' ;; esac
+    project=${transcript#"$from_dir/projects/"}
+    project=${project%/*}
+    case "$project" in */*) die 'Se requiere el transcript principal de una sesión.' ;; esac
+    candidate=${transcript##*/}; candidate=${candidate%.jsonl}
+    [ -z "$session" ] || [ "$candidate" = "$session" ] || die 'Session ID y transcript no coinciden.'
+    session=$candidate
+  else
+    project=$(project_name "$cwd")
+    if [ -n "$session" ]; then
+      safe_name "$session" || die 'Session ID inválido.'
+      transcript="$from_dir/projects/$project/$session.jsonl"
+      if [ ! -f "$transcript" ]; then
+        for candidate in "$from_dir"/projects/*/"$session.jsonl"; do
+          [ -f "$candidate" ] || continue
+          [ -z "$newest" ] || die 'Sesión ambigua: usa --transcript.'
+          newest=$candidate
+        done
+        transcript=$newest
+      fi
+    else
+      for candidate in "$from_dir/projects/$project"/*.jsonl; do
+        [ -f "$candidate" ] && [ ! -L "$candidate" ] || continue
+        if [ -z "$newest" ] || [ "$candidate" -nt "$newest" ]; then newest=$candidate; fi
+      done
+      transcript=$newest
+    fi
+    [ -n "$transcript" ] || die 'No se encontró una sesión para ese cwd.'
+    project=$(basename "$(dirname "$transcript")")
+    session=${transcript##*/}; session=${session%.jsonl}
+  fi
+  safe_name "$session" || die 'Session ID inválido.'
+  [ -f "$transcript" ] && [ ! -L "$transcript" ] || die "No existe el transcript: $transcript"
+  # Ensure source project directories do not lead outside the selected config.
+  [ "$(resolve_dir "$(dirname "$transcript")")" = "$from_dir/projects/$project" ] || die 'Proyecto simbólico rechazado.'
+  SOURCE_TRANSCRIPT=$transcript SESSION_ID=$session PROJECT=$project
+}
+cmd_handoff() {
+  local from='' to=auto session='' transcript='' cwd="$PWD" cwd_given=false quiet=false json=false from_dir to_dir dest md='' record inferred
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --from|--to|--session|--transcript|--cwd)
+        need_value "$@"
+        case "$1" in --from) from=$2 ;; --to) to=$2 ;; --session) session=$2 ;; --transcript) transcript=$2 ;; --cwd) cwd=$2; cwd_given=true ;; esac
+        shift 2 ;;
+      --quiet) quiet=true; shift ;; --json) json=true; shift ;; *) die "Opción desconocida: $1" ;;
+    esac
+  done
+  load_pool
+  from=${from:-$CURRENT_PROFILE}
+  [ -n "$from" ] || die 'Fuera del pool: indica --from.'
+  from_dir=$(profile_dir "$from")
+  cwd=$(resolve_dir "$cwd") || die 'El cwd no existe.'
+  if [ "$to" = auto ]; then choose_profile "$from"; to=$PICKED; fi
+  [ "$from" != "$to" ] || die 'Origen y destino deben ser distintos.'
+  to_dir=$(profile_dir "$to")
+  [ -d "$to_dir" ] || die "No existe el destino: $to_dir"
+  session_source "$from_dir" "$session" "$transcript" "$cwd"
+  if ! $cwd_given && { [ -n "$session" ] || [ -n "$transcript" ]; }; then
+    inferred=$(jq -nr 'first(inputs | objects | .cwd | select(type=="string" and length>0)) // empty' "$SOURCE_TRANSCRIPT")
+    if [ -n "$inferred" ]; then cwd=$(resolve_dir "$inferred") || die 'El cwd original ya no existe; indica --cwd.'; fi
+  fi
+  dest="$to_dir/projects/$PROJECT/$SESSION_ID.jsonl"
+  check_destination_dirs "$(dirname "$dest")" "$to_dir"
+  copy_private "$SOURCE_TRANSCRIPT" "$dest"
+  copy_siblings "${SOURCE_TRANSCRIPT%.jsonl}" "${dest%.jsonl}"
+  if [ -f "$STATE_DIR/sessions/$from-$SESSION_ID.json" ]; then
+    md=$(jq -er '.handoff_md // ""' "$STATE_DIR/sessions/$from-$SESSION_ID.json")
+  elif [ -f "$STATE_DIR/last-handoff.json" ]; then
+    md=$(jq -r --arg s "$SESSION_ID" --arg f "$from" 'if .session_id==$s and .from==$f then .handoff_md // "" else "" end' "$STATE_DIR/last-handoff.json")
+  fi
+  record=$(jq -n --arg from "$from" --arg to "$to" --arg sid "$SESSION_ID" --arg cwd "$cwd" --arg transcript "$dest" --arg source "$SOURCE_TRANSCRIPT" --arg md "$md" '{from:$from,to:$to,session_id:$sid,cwd:$cwd,transcript:$transcript,source_transcript:$source,at:now} + if $md=="" then {} else {handoff_md:$md} end')
+  printf '%s\n' "$record" | atomic_json "$STATE_DIR/last-handoff.json"
+  if $json; then printf '%s\n' "$record"; elif ! $quiet; then
+    printf 'Sesión copiada de %s a %s.\nclaude-relay resume --last\n' "$from" "$to"
+    printf 'cd %q && CLAUDE_CONFIG_DIR=%q claude --resume %q\n' "$cwd" "$to_dir" "$SESSION_ID"
+    [ -z "$md" ] || printf 'Handoff: %s\n' "$md"
+  fi
+}
+cmd_resume() {
+  local last=false session='' to='' record from cwd source dest md
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --last) last=true; shift ;;
+      --session|--to) need_value "$@"; if [ "$1" = --session ]; then session=$2; else to=$2; fi; shift 2 ;;
+      *) die "Opción desconocida: $1" ;;
+    esac
+  done
+  if $last && [ -n "$session" ]; then die '--last y --session son excluyentes.'; fi
+  if [ -n "$session" ]; then
+    cmd_handoff --session "$session" --to "${to:-auto}" --quiet
+  else
+    [ -f "$STATE_DIR/last-handoff.json" ] || die 'No hay handoff registrado.'
+    record=$(cat "$STATE_DIR/last-handoff.json")
+    from=$(printf '%s' "$record" | jq -er .from)
+    session=$(printf '%s' "$record" | jq -er .session_id)
+    cwd=$(printf '%s' "$record" | jq -er .cwd)
+    dest=$(printf '%s' "$record" | jq -r '.to // "auto"')
+    source=$(printf '%s' "$record" | jq -er '.source_transcript // .transcript')
+    # Re-copy available source files: the conversation (or a subagent) may
+    # have continued since the previous handoff. Newer destinations survive.
+    if [ -f "$source" ] || [ -n "$to" ] || [ "$dest" = auto ] || [ ! -f "$(printf '%s' "$record" | jq -r .transcript)" ]; then
+      cmd_handoff --from "$from" --to "${to:-$dest}" --session "$session" --transcript "$source" --cwd "$cwd" --quiet
+    fi
+  fi
+  load_pool
+  record=$(cat "$STATE_DIR/last-handoff.json")
+  to=$(printf '%s' "$record" | jq -er .to)
+  cwd=$(printf '%s' "$record" | jq -er .cwd)
+  session=$(printf '%s' "$record" | jq -er .session_id)
+  md=$(printf '%s' "$record" | jq -r '.handoff_md // ""')
+  [ -z "$md" ] || printf 'Handoff: %s\n' "$md" >&2
+  cd "$cwd"
+  launch_claude "$to" --resume "$session"
+}

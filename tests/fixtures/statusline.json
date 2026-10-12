@@ -1,0 +1,1 @@
+{"session_id":"session-one","transcript_path":"/unused/project/session-one.jsonl","cwd":"/unused/project","model":{"display_name":"Sonnet"},"rate_limits":{"five_hour":{"used_percentage":23,"resets_at":4102444800},"seven_day":{"used_percentage":41,"resets_at":4102444800}}}
