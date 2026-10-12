@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="330" viewBox="0 0 920 330" role="img" aria-label="claude-relay flow: measure quota, warn at 90 and 97 percent, hand the session to another account, resume it there. Separately, the relay subagent forwards one task to another account and returns the answer.">
+  <title>How claude-relay works</title>
+  <style>
+    .box   { fill: #FFFFFF; stroke: #CFE0DC; stroke-width: 1.5; }
+    .boxT  { fill: #DDF3EF; stroke: #0F766E; stroke-width: 1.5; }
+    .boxA  { fill: #FDF1DA; stroke: #B7791F; stroke-width: 1.5; }
+    .h     { fill: #12302D; font: 700 15px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .t     { fill: #4F6461; font: 400 12.5px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .c     { fill: #0F766E; font: 500 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    .lane  { fill: #4F6461; font: 600 11px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; letter-spacing: 0.08em; }
+    .arrow { stroke: #0F766E; stroke-width: 2; fill: none; }
+    .head  { fill: #0F766E; }
+    .rule  { stroke: #CFE0DC; stroke-width: 1.5; stroke-dasharray: 4 5; }
+    @media (prefers-color-scheme: dark) {
+      .box  { fill: #142220; stroke: #2C4743; }
+      .boxT { fill: #173A36; stroke: #5EC9BC; }
+      .boxA { fill: #3A2E17; stroke: #F2B84B; }
+      .h    { fill: #E3F1EE; }
+      .t, .lane { fill: #9DB3AF; }
+      .c    { fill: #5EC9BC; }
+      .arrow { stroke: #5EC9BC; }
+      .head { fill: #5EC9BC; }
+      .rule { stroke: #2C4743; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="head"/></marker>
+  </defs>
+
+  <text x="20" y="26" class="lane">WHEN AN ACCOUNT RUNS LOW</text>
+  <rect x="20" y="40" width="200" height="110" rx="12" class="box"/>
+  <text x="38" y="70" class="h">1 · Measure</text>
+  <text x="38" y="94" class="t">The statusline saves each</text>
+  <text x="38" y="112" class="t">account's 5-hour and 7-day</text>
+  <text x="38" y="130" class="t">usage after every reply.</text>
+
+  <rect x="252" y="40" width="200" height="110" rx="12" class="boxA"/>
+  <text x="270" y="70" class="h">2 · Warn</text>
+  <text x="270" y="94" class="t">At 90 %: wrap up.</text>
+  <text x="270" y="112" class="t">At 97 %: write a handoff</text>
+  <text x="270" y="130" class="t">summary now.</text>
+
+  <rect x="484" y="40" width="200" height="110" rx="12" class="box"/>
+  <text x="502" y="70" class="h">3 · Hand off</text>
+  <text x="502" y="94" class="t">The conversation is copied</text>
+  <text x="502" y="112" class="t">to the account with the</text>
+  <text x="502" y="130" class="t">most room left.</text>
+
+  <rect x="716" y="40" width="184" height="110" rx="12" class="boxT"/>
+  <text x="734" y="70" class="h">4 · Resume</text>
+  <text x="734" y="94" class="t">Continue the same</text>
+  <text x="734" y="112" class="t">conversation there:</text>
+  <text x="734" y="134" class="c">resume --last</text>
+
+  <path d="M220 95 H248" class="arrow" marker-end="url(#a)"/>
+  <path d="M452 95 H480" class="arrow" marker-end="url(#a)"/>
+  <path d="M684 95 H712" class="arrow" marker-end="url(#a)"/>
+
+  <path d="M20 182 H900" class="rule"/>
+
+  <text x="20" y="214" class="lane">WHEN YOUR AGENT DELEGATES (OPTIONAL)</text>
+  <rect x="20" y="228" width="200" height="84" rx="12" class="box"/>
+  <text x="38" y="258" class="h">Your agent</text>
+  <text x="38" y="282" class="t">writes one complete,</text>
+  <text x="38" y="300" class="t">self-contained task.</text>
+
+  <rect x="252" y="228" width="200" height="84" rx="12" class="boxT"/>
+  <text x="270" y="258" class="h">relay</text>
+  <text x="270" y="282" class="t">a small messenger that</text>
+  <text x="270" y="300" class="t">passes it on as a file.</text>
+
+  <rect x="484" y="228" width="416" height="84" rx="12" class="box"/>
+  <text x="502" y="258" class="h">claude -p on another account</text>
+  <text x="502" y="282" class="t">does the work read-only by default and sends the answer</text>
+  <text x="502" y="300" class="t">back. It never sees your conversation.</text>
+
+  <path d="M220 270 H248" class="arrow" marker-end="url(#a)"/>
+  <path d="M452 270 H480" class="arrow" marker-end="url(#a)"/>
+</svg>
