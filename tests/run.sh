@@ -42,7 +42,7 @@ guard_input() { jq --arg cwd "$SANDBOX/project space" --arg transcript "$SOURCE"
 write_pool
 printf 'warn_at=90\nhandoff_at=97\nunknown_score=50\n' > "$XDG_CONFIG_HOME/claude-relay/config"
 check test -f "$CLI"
-if [ ! -f "$CLI" ]; then printf 'Resumen: %s pruebas, %s correctas, %s fallidas.\n' "$TOTAL" "$((TOTAL-FAILED))" "$FAILED"; exit 1; fi
+if [ ! -f "$CLI" ]; then printf 'Summary: %s tests, %s passed, %s failed.\n' "$TOTAL" "$((TOTAL-FAILED))" "$FAILED"; exit 1; fi
 relay --version > "$SANDBOX/version"
 check test -s "$SANDBOX/version"
 relay statusline < "$ROOT/tests/fixtures/statusline.json" > "$SANDBOX/out"
@@ -50,7 +50,7 @@ check json_is "$XDG_STATE_HOME/claude-relay/usage/a.json" '.profile=="a" and .ra
 check equals "$(cat "$SANDBOX/out")" 'a · 5h 23% · 7d 41%'
 cp "$XDG_STATE_HOME/claude-relay/usage/a.json" "$SANDBOX/usage-before"
 printf '{"session_id":"missing"}' | relay statusline > "$SANDBOX/out"
-check equals "$(cat "$SANDBOX/out")" 'a · sin dato'
+check equals "$(cat "$SANDBOX/out")" 'a · no data'
 check cmp -s "$SANDBOX/usage-before" "$XDG_STATE_HOME/claude-relay/usage/a.json"
 CLAUDE_CONFIG_DIR="$SANDBOX/outside" relay statusline < "$ROOT/tests/fixtures/statusline.json" > "$SANDBOX/out"
 check test ! -s "$SANDBOX/out"
@@ -79,22 +79,22 @@ check json_is "$SANDBOX/pick" '.profile=="b" and .score==15'
 PROJECT=$(printf '%s' "$SANDBOX/project space" | jq -Rr 'gsub("[^a-zA-Z0-9]";"-")')
 SOURCE="$CLAUDE_PROFILES_ROOT/a/projects/$PROJECT/session-one.jsonl"
 mkdir -p "$(dirname "$SOURCE")/session-one/subagents"
-printf '{"type":"user","message":"hola"}\n' > "$SOURCE"
+printf '{"type":"user","message":"hello"}\n' > "$SOURCE"
 printf '{"type":"assistant"}\n' > "$(dirname "$SOURCE")/session-one/subagents/agent-one.jsonl"
 usage a 89
 guard_input | relay hook guard > "$SANDBOX/out"
 check test ! -s "$SANDBOX/out"
 usage a 90
 guard_input | relay hook guard > "$SANDBOX/out"
-check json_is "$SANDBOX/out" '.hookSpecificOutput.hookEventName=="UserPromptSubmit" and (.hookSpecificOutput.additionalContext | contains("90"))'
+check json_is "$SANDBOX/out" '.hookSpecificOutput.hookEventName=="UserPromptSubmit" and .hookSpecificOutput.additionalContext=="Profile a quota usage is at 90 %. Start wrapping up the work and do not start long tasks."'
 guard_input | relay hook guard > "$SANDBOX/out"
 check test ! -s "$SANDBOX/out"
 usage a 97
 guard_input PostToolUse | relay hook guard > "$SANDBOX/out"
-check json_is "$SANDBOX/out" '.hookSpecificOutput.hookEventName=="PostToolUse" and (.hookSpecificOutput.additionalContext | contains("Objetivo") and contains("resume --last"))'
+check json_is "$SANDBOX/out" '.hookSpecificOutput.hookEventName=="PostToolUse" and (.hookSpecificOutput.additionalContext | contains("Goal; Status (done / in progress / pending); Files and branches touched; Decisions and why; Concrete next steps; Commands to verify; Risks/open questions") and contains("in the language of the conversation") and contains("resume --last"))'
 HANDOFF=$(jq -r .handoff_md "$XDG_STATE_HOME/claude-relay/last-handoff.json")
 check test -d "$(dirname "$HANDOFF")"
-printf 'Objetivo: continuar\n' > "$HANDOFF"
+printf 'Goal: continue\n' > "$HANDOFF"
 guard_input | relay hook guard > "$SANDBOX/out"
 check test ! -s "$SANDBOX/out"
 printf '{broken' | relay hook guard > "$SANDBOX/out" 2> "$SANDBOX/err"
@@ -306,10 +306,10 @@ for operation in statusline guard; do
     if [ "$operation" = statusline ]; then relay statusline < "$ROOT/tests/fixtures/statusline.json" > /dev/null
     else guard_input | relay hook guard > /dev/null; fi
   done
-  jq -nr --arg operation "$operation" --argjson start "$started" '"Tiempo medio " + $operation + ": " + (((now-$start)*1000/5|round)|tostring) + " ms (5 ejecuciones)."'
+  jq -nr --arg operation "$operation" --argjson start "$started" '"Average time " + $operation + ": " + (((now-$start)*1000/5|round)|tostring) + " ms (5 runs)."'
 done
 relay uninstall --purge > "$SANDBOX/uninstall"
 check test ! -e "$XDG_CONFIG_HOME/claude-relay"
 check test ! -e "$XDG_STATE_HOME/claude-relay"
-printf 'Resumen: %s pruebas, %s correctas, %s fallidas.\n' "$TOTAL" "$((TOTAL-FAILED))" "$FAILED"
+printf 'Summary: %s tests, %s passed, %s failed.\n' "$TOTAL" "$((TOTAL-FAILED))" "$FAILED"
 [ "$FAILED" -eq 0 ]

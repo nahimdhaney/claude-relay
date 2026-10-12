@@ -13,7 +13,7 @@ relay status --json > "$SANDBOX/status"
 check json_is "$SANDBOX/status" '.[0].score==100 and .[0].exhausted==true and .[0].known==false'
 check equals "$(relay pick)" b
 relay status > "$SANDBOX/status-table"
-check grep -Eq 'agotada hasta [0-9]{2}:[0-9]{2}' "$SANDBOX/status-table"
+check grep -Eq 'exhausted until [0-9]{2}:[0-9]{2}' "$SANDBOX/status-table"
 check equals "$(LC_ALL=C ls -l "$MARKER" 2>/dev/null | cut -c1-10)" '-rw-------'
 check relay exhausted a --clear
 check test ! -e "$MARKER"
@@ -110,14 +110,14 @@ for field in error error_type error_details matcher reason message; do
   rm -f "$MARKER" "$NOTIFY_LOG"
   jq -n --arg field "$field" --arg signal "$signal" '{hook_event_name:"StopFailure",session_id:"missing",($field):$signal}' | relay hook stop-failure > "$SANDBOX/out" 2> "$SANDBOX/err"
   check json_is "$MARKER" '.profile=="a" and .source=="stop-failure" and .until==4102444800'
-  check json_is "$NOTIFY_LOG" 'any(.[]; contains("cuenta a agotada; no se pudo copiar la sesión"))'
+  check json_is "$NOTIFY_LOG" 'any(.[]; contains("account a exhausted; could not copy the session"))'
 done
 check equals "$(wc -l < "$STATE/events.log" 2>/dev/null | tr -d ' ')" 7
 # Successful handoff and a real copy failure, with the mark present before copying.
 usage b 10; usage c 20
 guard_input StopFailure | relay hook stop-failure > "$SANDBOX/out" 2> "$SANDBOX/err"
 check json_is "$STATE/last-handoff.json" '.to=="b" and .session_id=="session-one"'
-check json_is "$NOTIFY_LOG" 'any(.[]; contains("perfil b") and contains("resume --last"))'
+check json_is "$NOTIFY_LOG" 'any(.[]; contains("profile b") and contains("resume --last"))'
 touch -t 202001010000 "$DEST"
 cat > "$SANDBOX/fake/cp" <<'COPYFAIL'
 #!/usr/bin/env bash
@@ -131,7 +131,7 @@ guard_input StopFailure | relay hook stop-failure > "$SANDBOX/out" 2> "$SANDBOX/
 rm "$SANDBOX/fake/cp"
 check test -s "$COPY_CHECK"
 check test ! -e "$STATE/last-handoff.json"
-check json_is "$NOTIFY_LOG" 'any(.[]; contains("cuenta a agotada; no se pudo copiar la sesión"))'
+check json_is "$NOTIFY_LOG" 'any(.[]; contains("account a exhausted; could not copy the session"))'
 check test ! -s "$SANDBOX/out"
 check test ! -s "$SANDBOX/err"
 printf '{broken' | relay hook stop-failure > "$SANDBOX/out" 2> "$SANDBOX/err"

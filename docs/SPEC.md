@@ -1,288 +1,289 @@
-# claude-relay — especificación v0.1
+# claude-relay — specification v0.1
 
-Herramienta para usar varias cuentas de Claude Code (perfiles con distinto
-`CLAUDE_CONFIG_DIR`) sin perder el trabajo cuando una se queda sin cuota:
+A tool for using multiple Claude Code accounts (profiles with different
+`CLAUDE_CONFIG_DIR` values) without losing work when one runs out of quota:
 
-1. **Medir** la cuota de plan de cada perfil (5 h y 7 días).
-2. **Elegir** el perfil con más margen (`pick`) y lanzar Claude ahí (`run`).
-3. **Avisar** al modelo cuando la cuota del perfil actual cruza un umbral, para
-   que escriba un handoff antes de quedarse sin tokens.
-4. **Traspasar** la sesión a otro perfil: copiar el transcript y retomarlo con
-   `claude --resume` (verificado a mano en Claude Code 2.1.296), más el handoff.
+1. **Measure** each profile's plan quota usage (5 hours and 7 days).
+2. **Select** the profile with the most remaining capacity (`pick`) and launch
+   Claude there (`run`).
+3. **Warn** the model when the current profile's quota usage crosses a threshold,
+   so it can write a handoff before running out of tokens.
+4. **Transfer** the session to another profile: copy the transcript and resume
+   it with `claude --resume` (manually verified in Claude Code 2.1.296), along
+   with the handoff.
 
-Tiene que ser exportable: cualquier persona lo clona, corre `./install.sh` y
-funciona, use o no `claude-profile`.
+The tool must be shareable: anyone should be able to clone it, run
+`./install.sh` and use it, with or without `claude-profile`.
 
-## Hechos de Claude Code en los que se apoya
+## Claude Code facts this relies on
 
-Observaciones reales del 2026-10-12 con Claude Code 2.1.296 incluidas abajo.
+Live observations from 2026-10-12 with Claude Code 2.1.296 are included below.
 
-- El JSON que recibe el comando de `statusLine` por stdin trae
-  `rate_limits.five_hour.{used_percentage,resets_at}` y
+- The JSON received by the `statusLine` command on stdin contains
+  `rate_limits.five_hour.{used_percentage,resets_at}` and
   `rate_limits.seven_day.{used_percentage,resets_at}` (`used_percentage` 0–100,
-  `resets_at` epoch en segundos). Solo para suscriptores de claude.ai, solo
-  después de la primera respuesta de la sesión, y cada ventana puede faltar.
-  Verificado en asientos Team: reciben `five_hour`, sin `seven_day`.
-  Ningún hook recibe `rate_limits`; por eso la statusline lo guarda en un
-  archivo. Trae además `session_id`, `transcript_path`, `cwd`, `model`.
-- La entrada de los hooks (JSON por stdin) trae `session_id`, `transcript_path`,
-  `cwd`, `hook_event_name`. Los hooks heredan el entorno, así que
-  `CLAUDE_CONFIG_DIR` dice qué perfil corre (si no está, es `~/.claude`).
-- `UserPromptSubmit` y `PostToolUse` pueden inyectar contexto al modelo con
-  `{"hookSpecificOutput":{"hookEventName":"<evento>","additionalContext":"..."}}`
-  en stdout y exit 0.
-- `StopFailure` corre cuando el turno termina por error de API. No está
-  confirmado si el error de plan «You've hit your session limit · resets
-  2:10pm» llega con matcher `rate_limit`; relay se instala sin matcher y
-  registra los eventos para investigarlo. Su salida se ignora.
-- Transcripts: `<config>/projects/<proyecto>/<session_id>.jsonl` (más un
-  directorio hermano `<session_id>/` con transcripts de subagentes si existe).
-  `<proyecto>` es el cwd con todo lo no alfanumérico reemplazado por `-`.
-  Usar el nombre del directorio de origen tal cual, no recalcularlo.
-  `claude --resume <id>` en el perfil destino, con cwd igual al original,
-  retoma la conversación. El formato es interno y puede cambiar: documentarlo.
-- Variables de auth que hay que quitar del entorno al lanzar otro perfil:
+  `resets_at` in epoch seconds). Available only for claude.ai subscribers and
+  only after the session's first response; either window may be missing.
+  Verified with Team seats: they receive `five_hour`, without `seven_day`.
+  No hook receives `rate_limits`, so the statusline saves it to a file.
+  The input also includes `session_id`, `transcript_path`, `cwd`, `model`.
+- Hook input (JSON on stdin) includes `session_id`, `transcript_path`, `cwd`,
+  `hook_event_name`. Hooks inherit the environment, so `CLAUDE_CONFIG_DIR`
+  identifies the running profile (defaulting to `~/.claude` when unset).
+- `UserPromptSubmit` and `PostToolUse` can inject context into the model with
+  `{"hookSpecificOutput":{"hookEventName":"<event>","additionalContext":"..."}}`
+  on stdout and exit code 0.
+- `StopFailure` runs when a turn ends with an API error. It is unconfirmed
+  whether the plan error "You've hit your session limit · resets 2:10pm"
+  arrives with matcher `rate_limit`; relay installs without a matcher and
+  logs events to investigate. Its output is ignored.
+- Transcripts: `<config>/projects/<project>/<session_id>.jsonl` (plus a sibling
+  `<session_id>/` directory containing subagent transcripts, if present).
+  `<project>` is the cwd with every non-alphanumeric character replaced by `-`.
+  Use the source directory name as-is; do not recalculate it.
+  `claude --resume <id>` in the destination profile, with the original cwd,
+  resumes the conversation. The format is internal and may change: document it.
+- Authentication variables to remove from the environment when launching
+  another profile:
   `ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
   CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
   ANTHROPIC_BASE_URL`.
-- `claude -p` (headless) no ejecuta la statusline: su gasto no queda medido.
-- Una cuenta ya agotada nunca obtiene una respuesta exitosa ni una medición;
-  requiere una marca de agotamiento independiente de `rate_limits`.
-- El primer lanzamiento interactivo en una carpeta nueva muestra el prompt
-  de confianza del workspace.
-- `CLAUDE_CODE_CHILD_SESSION=1` heredado desactiva el guardado de transcripts.
-  `run` y `resume` quitan ese marcador junto con `CLAUDECODE`.
+- `claude -p` (headless) does not run the statusline: its usage is not measured.
+- An already exhausted account never gets a successful response or a
+  measurement; it needs an exhaustion mark independent of `rate_limits`.
+- The first interactive launch in a new folder shows the workspace trust prompt.
+- Inherited `CLAUDE_CODE_CHILD_SESSION=1` disables transcript saving.
+  `run` and `resume` remove that marker along with `CLAUDECODE`.
 
-## Restricciones
+## Constraints
 
-- Bash compatible con **bash 3.2** (el de macOS): nada de arrays asociativos,
+- Bash compatible with **bash 3.2** (the macOS version): no associative arrays,
   `mapfile`, `${var,,}`, `declare -A`. `#!/usr/bin/env bash`, `set -euo pipefail`.
-- Dependencias: `jq` (>= 1.6) y coreutils POSIX. Nada de flags solo GNU o solo
-  BSD (`date -d`, `stat -c`, `sed -i` sin sufijo…); para fechas usar `jq now`.
-  Debe correr en macOS y Linux.
-- Hooks y statusline rápidos (objetivo < 100 ms): salir temprano si el perfil
-  no está en el pool o no hay dato.
-- Nunca leer, copiar ni imprimir credenciales (`.credentials.json`, keychain,
-  `.claude.json` completo). Del `.claude.json` solo se lee
-  `oauthAccount.emailAddress` y `oauthAccount.organizationName` para `status`.
-- Archivos que contienen transcripts o handoffs: `umask 077`, modo 600/700.
-- Escrituras atómicas (archivo temporal + `mv`).
-- Ningún hook puede romper la sesión: ante cualquier error, exit 0 sin salida.
-- Sin dependencias de red.
+- Dependencies: `jq` (>= 1.6) and POSIX core utilities. No GNU-only or BSD-only
+  flags (`date -d`, `stat -c`, `sed -i` without a suffix…); use `jq now` for dates.
+  Must run on macOS and Linux.
+- Fast hooks and statusline (target < 100 ms): exit early if the profile is
+  outside the pool or there is no data.
+- Never read, copy or print credentials (`.credentials.json`, keychain,
+  the complete `.claude.json`). Only read `oauthAccount.emailAddress` and
+  `oauthAccount.organizationName` from `.claude.json` for `status`.
+- Files containing transcripts or handoffs: `umask 077`, mode 600/700.
+- Atomic writes (temporary file + `mv`).
+- No hook may break the session: on any error, exit 0 with no output.
+- No network dependencies.
 
-## Estructura del repo
+## Repository structure
 
 ```
-bin/claude-relay          CLI único (subcomandos)
-lib/                      funciones compartidas (sourced por bin/)
-agents/relay.md           subagente envoltorio (opcional al instalar)
-install.sh                atajo: bin/claude-relay install "$@"
-tests/run.sh              suite en bash puro, sin dependencias extra
-tests/round2.sh           regresiones de agotamiento, hooks y lanzamiento
-tests/fixtures/           JSON de ejemplo (statusline, hooks)
-README.md                 en español: qué hace, instalar, usar, límites, términos
-docs/SPEC.md              este archivo
+bin/claude-relay          single CLI (subcommands)
+lib/                     shared functions (sourced by bin/)
+agents/relay.md           wrapper subagent (optional at installation)
+install.sh               shortcut: bin/claude-relay install "$@"
+tests/run.sh             pure Bash suite, no extra dependencies
+tests/round2.sh           exhaustion, hook and launch regressions
+tests/fixtures/           sample JSON (statusline, hooks)
+README.md                in English: purpose, installation, usage, limits, terms
+docs/SPEC.md             this file
 ```
 
-## Configuración
+## Configuration
 
-- Pool: `${XDG_CONFIG_HOME:-~/.config}/claude-relay/pool`, una línea por
-  perfil `nombre<TAB>config_dir`, `#` comentarios. Orden = prioridad de desempate.
-- Opciones: `${XDG_CONFIG_HOME:-~/.config}/claude-relay/config` (`clave=valor`):
+- Pool: `${XDG_CONFIG_HOME:-~/.config}/claude-relay/pool`, one
+  `name<TAB>config_dir` line per profile, `#` comments. Order = tie-break priority.
+- Options: `${XDG_CONFIG_HOME:-~/.config}/claude-relay/config` (`key=value`):
   `warn_at=90`, `handoff_at=97`, `unknown_score=50`, `exhausted_ttl=3600`,
-  `wrapped_statusline=<cmd>`. `exhausted_ttl` es un entero positivo en segundos.
-  Variables de entorno `CLAUDE_RELAY_WARN_AT`, `CLAUDE_RELAY_HANDOFF_AT` y
-  `CLAUDE_RELAY_EXHAUSTED_TTL` pisan sus claves correspondientes.
-- Estado: `${XDG_STATE_HOME:-~/.local/state}/claude-relay/`:
-  `usage/<perfil>.json`, `handoffs/<proyecto>/<YYYYmmdd-HHMMSS>-<sid8>.md`,
-  `last-handoff.json`, `warned/<perfil>-<sid>-<nivel>-<resets_at>`,
-  `exhausted/<perfil>.json`, `events.log`.
-- Perfil actual = el nombre del pool cuyo `config_dir` coincide (ruta resuelta)
-  con `${CLAUDE_CONFIG_DIR:-~/.claude}`. Si no coincide ninguno: no es del pool.
+  `wrapped_statusline=<cmd>`. `exhausted_ttl` is a positive integer in seconds.
+  Environment variables `CLAUDE_RELAY_WARN_AT`, `CLAUDE_RELAY_HANDOFF_AT` and
+  `CLAUDE_RELAY_EXHAUSTED_TTL` override their corresponding keys.
+- State: `${XDG_STATE_HOME:-~/.local/state}/claude-relay/`:
+  `usage/<profile>.json`, `handoffs/<project>/<YYYYmmdd-HHMMSS>-<sid8>.md`,
+  `last-handoff.json`, `warned/<profile>-<sid>-<level>-<resets_at>`,
+  `exhausted/<profile>.json`, `events.log`.
+- Current profile = the pool name whose `config_dir` matches (resolved path)
+  `${CLAUDE_CONFIG_DIR:-~/.claude}`. If none matches, it is outside the pool.
 
-## Subcomandos
+## Subcommands
 
 `claude-relay status [--json]`
-: Tabla: perfil, cuenta (email · org), 5 h %, 7 d %, cuándo reinicia cada
-  ventana (hora local), antigüedad del dato, puntaje, y marca `*` en el perfil
-  actual. Una ventana cuyo `resets_at` ya pasó se muestra como 0 % ("reinició").
-  Con marca de agotamiento vigente, muestra «agotada hasta HH:MM» (hora local).
-  El JSON incluye `exhausted:true`, `exhausted_until` y `score:100`; sin marca
-  vigente incluye `exhausted:false` y el puntaje de uso normal.
+: Table: profile, account (email · org), 5 h %, 7 d %, each window's reset time
+  (local time), data age, score, and `*` marking the current profile. A window
+  whose `resets_at` has passed is shown as 0% ("reset"). With an active exhaustion
+  mark, show "exhausted until HH:MM" (local time). JSON includes `exhausted:true`,
+  `exhausted_until` and `score:100`; without an active mark, it includes
+  `exhausted:false` and the normal usage score.
 
 `claude-relay pick [--exclude P]... [--json]`
-: Imprime el nombre del mejor perfil. Puntaje = máximo `used_percentage` de las
-  ventanas vigentes (vencidas = 0); sin dato = `unknown_score`. Se descartan los
-  perfiles con puntaje >= `handoff_at` y los perfiles cuyo config_dir no existe.
-  Menor puntaje gana; empate → orden del pool. Sin candidatos → exit 3 y mensaje
-  a stderr.
+: Print the best profile's name. Score = maximum `used_percentage` of active
+  windows (expired = 0); no data = `unknown_score`. Exclude profiles with scores
+  >= `handoff_at` and profiles whose config_dir does not exist. Lowest score
+  wins; ties → pool order. No candidates → exit 3 and a message on stderr.
 
-`claude-relay exhausted <perfil> [--for DURATION | --until EPOCH] [--clear]`
-: Escribe atómicamente `exhausted/<perfil>.json` (modo 600) =
-  `{profile, at, until, source}`. `at` y `until` son epoch en segundos;
-  `source` es `manual` o `stop-failure`. Por defecto `until` es el último
-  `five_hour.resets_at` conocido si está en el futuro; si no, `now + exhausted_ttl`.
-  `--for` acepta enteros positivos con sufijo `s`, `m` o `h` (3600s, 90m, 4h).
-  `--until` acepta un epoch entero no negativo. `--clear` borra la marca de
-  forma idempotente; esas tres opciones son excluyentes. Requiere un perfil
-  del pool. Mientras `until > now`, `measurement()` informa puntaje 100 y
-  `exhausted:true`, incluso sin mediciones, impidiendo su selección automática.
-  Una marca vencida deja de influir sin borrar las mediciones previas.
+`claude-relay exhausted <profile> [--for DURATION | --until EPOCH] [--clear]`
+: Atomically write `exhausted/<profile>.json` (mode 600) =
+  `{profile, at, until, source}`. `at` and `until` are epoch seconds;
+  `source` is `manual` or `stop-failure`. By default, `until` is the last known
+  `five_hour.resets_at` if it is in the future; otherwise, `now + exhausted_ttl`.
+  `--for` accepts positive integers with suffix `s`, `m` or `h` (3600s, 90m, 4h).
+  `--until` accepts a non-negative integer epoch. `--clear` removes the mark
+  idempotently; these three options are mutually exclusive. Requires a profile
+  in the pool. While `until > now`, `measurement()` reports score 100 and
+  `exhausted:true`, even without measurements, preventing automatic selection.
+  An expired mark stops affecting the score without deleting prior measurements.
 
-`claude-relay run [--profile P | --pick] [--exclude P]... -- <args de claude>`
-: `exec` de `claude` con `CLAUDE_CONFIG_DIR` del perfil y sin las variables de
-  auth ni `CLAUDECODE` / `CLAUDE_CODE_CHILD_SESSION`; esto permite guardar los
-  transcripts del proceso separado. Aplica también a `resume`. Binario
-  configurable con `CLAUDE_RELAY_CLAUDE_BIN` (para tests).
+`claude-relay run [--profile P | --pick] [--exclude P]... -- <claude args>`
+: `exec` `claude` with the profile's `CLAUDE_CONFIG_DIR` and without
+  authentication variables or `CLAUDECODE` / `CLAUDE_CODE_CHILD_SESSION`; this
+  allows the separate process's transcripts to be saved. Also applies to
+  `resume`. The binary is configurable with `CLAUDE_RELAY_CLAUDE_BIN` (for tests).
 
 `claude-relay handoff [--from P] [--to P|auto] [--session ID | --transcript PATH] [--cwd DIR] [--quiet] [--json]`
-: Copia el transcript de la sesión al perfil destino (`auto` = `pick
-  --exclude <origen>`). Sin `--session`/`--transcript`: la sesión más reciente
-  (mtime) del proyecto del cwd en el perfil de origen (por defecto el actual).
-  Copia también el directorio hermano `<sid>/` si existe. No pisa un archivo
-  destino más nuevo que el origen. Registra `last-handoff.json` (`from`, `to`,
-  `session_id`, `cwd`, `transcript`, `handoff_md` si hay uno para esa sesión,
-  `at`). Imprime el comando para retomar:
-  `claude-relay resume --last` y el equivalente crudo
+: Copy the session transcript to the destination profile (`auto` = `pick
+  --exclude <source>`). Without `--session`/`--transcript`: the most recent
+  session (mtime) in the cwd's project in the source profile (default: current
+  profile). Also copy the sibling `<sid>/` directory if present. Do not
+  overwrite a destination file newer than the source. Record `last-handoff.json`
+  (`from`, `to`, `session_id`, `cwd`, `transcript`, `handoff_md` if one exists for
+  that session, `at`). Print the resume command: `claude-relay resume --last`
+  and its direct equivalent
   `cd <cwd> && CLAUDE_CONFIG_DIR=<dir> claude --resume <sid>`.
 
 `claude-relay resume [--last | --session ID] [--to P|auto]`
-: Hace el `handoff` (si hace falta) y luego `cd <cwd>` + `exec claude --resume
-  <sid>` en el destino. Si hay handoff `.md` para la sesión, muestra su ruta
-  antes de lanzar.
+: Perform the `handoff` (if needed), then `cd <cwd>` + `exec claude --resume
+  <sid>` in the destination profile. If a handoff `.md` exists for the session,
+  show its path before launching.
 
 `claude-relay statusline`
-: Comando para `statusLine`. Lee stdin; si hay `rate_limits` y el perfil está en
-  el pool, escribe `usage/<perfil>.json` =
-  `{profile, captured_at, session_id, rate_limits}` (atómico). Imprime una línea
-  corta: `<perfil> · 5h 23% · 7d 41%` (o `sin dato`). Si hay
-  `wrapped_statusline`, le pasa el mismo stdin y agrega su salida después,
-  separada por ` │ `. Nunca falla.
-  Una captura con ventana válida, puntaje menor que `handoff_at` y
-  `captured_at > marker.at` borra la marca de agotamiento. Capturas sin ventanas,
-  anteriores/iguales a la marca o con puntaje alto no la borran.
+: Command for `statusLine`. Read stdin; if `rate_limits` is present and the
+  profile is in the pool, write `usage/<profile>.json` =
+  `{profile, captured_at, session_id, rate_limits}` (atomically). Print a short
+  line: `<profile> · 5h 23% · 7d 41%` (or `no data`). If `wrapped_statusline`
+  exists, pass it the same stdin and append its output, separated by ` │ `.
+  Never fails. A capture with a valid window, a score below `handoff_at` and
+  `captured_at > marker.at` clears the exhaustion mark. Captures without
+  windows, older than or equal to the mark, or with a high score do not clear it.
 
 `claude-relay hook guard`
-: Para `UserPromptSubmit` y `PostToolUse`. Lee stdin (session_id,
-  transcript_path, cwd, hook_event_name). Lee `usage/<perfil-actual>.json`;
-  si el dato es de otra sesión igual sirve (es la misma cuenta). Nivel =
-  puntaje como en `pick`.
-  - nivel >= `warn_at` y aún no avisado (marca en `warned/` por perfil,
-    sesión, nivel y `resets_at` de la ventana que disparó) → contexto suave:
-    cuota en X %, ir cerrando, no empezar tareas largas.
-  - nivel >= `handoff_at` y aún no avisado → contexto fuerte: dejar de empezar
-    trabajo nuevo; escribir YA el handoff en la ruta exacta
-    `handoffs/<proyecto>/<ts>-<sid8>.md` con secciones: Objetivo, Estado
-    (hecho / en curso / pendiente), Archivos y ramas tocados, Decisiones y por
-    qué, Próximos pasos concretos, Comandos para verificar, Riesgos/dudas;
-    escribirlo en el idioma de la conversación; después decirle al usuario que
-    corra `claude-relay resume --last` (o `--to <mejor perfil>`, nombrando el
-    que devuelve `pick` en ese momento) en su terminal. El hook también
-    registra esa ruta como handoff de la sesión para que `handoff`/`resume` la
-    encuentren.
-  - Salida JSON con `hookSpecificOutput.hookEventName` igual al evento recibido.
-  - Fuera del pool, sin dato o error → exit 0 sin salida.
+: For `UserPromptSubmit` and `PostToolUse`. Read stdin (session_id,
+  transcript_path, cwd, hook_event_name). Read `usage/<current-profile>.json`;
+  data from another session is still useful (it is the same account).
+  Level = score as in `pick`.
+  - level >= `warn_at` and not yet warned (mark in `warned/` per profile,
+    session, level and `resets_at` of the triggering window) → soft context:
+    quota usage at X%, start wrapping up, do not start long tasks.
+  - level >= `handoff_at` and not yet warned → strong context: stop starting
+    new work; write the handoff NOW at the exact path
+    `handoffs/<project>/<ts>-<sid8>.md` with sections: Goal; Status (done / in
+    progress / pending); Files and branches touched; Decisions and why;
+    Concrete next steps; Commands to verify; Risks/open questions; write it
+    in the language of the conversation; then tell the user to run
+    `claude-relay resume --last` (or `--to <best profile>`, naming the profile
+    returned by `pick` at that moment) in their terminal. The hook also records
+    that path as the session's handoff so `handoff`/`resume` can find it.
+  - JSON output with `hookSpecificOutput.hookEventName` matching the received event.
+  - Outside the pool, no data or error → exit 0 with no output.
 
 `claude-relay hook stop-failure`
-: Para todos los `StopFailure`, sin matcher. En este orden:
-  1. Añade una línea JSON saneada a `events.log` (modo 600): `at` ISO UTC,
-     `profile`, `session_id`, `keys` (claves superiores ordenadas) y los valores
-     presentes de `error`, `error_type`, `error_details`, `matcher`, `reason`,
-     `message`. Reemplaza controles en los valores por espacios y trunca cada
-     valor y el session_id a 200 caracteres. No registra transcripts ni ningún
-     otro valor de entrada.
-  2. Detecta límite si alguno de esos seis campos equivale a `rate_limit` o su
-     texto completo coincide, sin distinguir mayúsculas, con
+: For all `StopFailure` events, without a matcher. In this order:
+  1. Append a sanitized JSON line to `events.log` (mode 600): ISO UTC `at`,
+     `profile`, `session_id`, `keys` (sorted top-level keys), and any present
+     values among `error`, `error_type`, `error_details`, `matcher`, `reason`,
+     `message`. Replace control characters in values with spaces and truncate
+     each value and session_id to 200 characters. Do not log transcripts or
+     any other input values.
+  2. Detect a limit if any of those six fields equals `rate_limit` or its full
+     text matches, case-insensitively,
      `rate.?limit|usage limit|session limit|weekly limit|hit your .*limit|limit reached`.
-     Otros errores solo se registran; no marcan, copian ni notifican.
-  3. Marca el perfil actual agotado antes de intentar copiar.
-  4. Intenta `handoff --to auto` con el transcript recibido. Notifica el perfil
-     destino y `claude-relay resume --last` si funcionó; si falta el transcript
-     o falla la copia/selección, notifica «cuenta X agotada; no se pudo copiar
-     la sesión». Usa `osascript` en macOS o `notify-send` en Linux si existe.
-  Fuera del pool o entrada inválida, sin salida; exit 0 siempre. La copia corre
-  en un proceso separado para conservar el manejo de errores de Bash.
+     Other errors are only logged; they do not mark, copy or notify.
+  3. Mark the current profile as exhausted before attempting to copy.
+  4. Attempt `handoff --to auto` with the received transcript. Notify with the
+     destination profile and `claude-relay resume --last` on success; if the
+     transcript is missing or copying/selection fails, notify "account X
+     exhausted; could not copy the session". Use `osascript` on macOS or
+     `notify-send` on Linux if available.
+  Outside the pool or with invalid input, produce no output; always exit 0.
+  Copying runs in a separate process to preserve Bash error handling.
 
-`claude-relay install [--profiles a,b,c | --profile nombre=dir]... [--settings PATH]... [--with-agent] [--warn-at N] [--handoff-at N] [--dry-run]`
-: - Escribe el pool. `--profiles a,b` resuelve cada nombre a
-    `${CLAUDE_PROFILES_ROOT:-~/.claude-profiles}/<nombre>` (debe existir);
-    `--profile nombre=dir` para rutas arbitrarias. Si no se da nada, usa
-    `default=~/.claude`.
-  - Symlink `~/.local/bin/claude-relay` → `bin/claude-relay` del repo (avisar si
-    `~/.local/bin` no está en PATH).
-  - Settings destino: los `--settings` dados; si no, `~/.claude/settings.json`
-    cuando `claude-profile` está en PATH (porque re-sincroniza desde ahí);
-    si no, el `settings.json` de cada config_dir del pool.
-  - Merge con jq, **aditivo e idempotente**: agrega a `hooks.UserPromptSubmit`,
-    `hooks.PostToolUse` (sin matcher = todas las herramientas) y
-    `hooks.StopFailure` (sin matcher) un grupo cuyo comando es
-    `<ruta absoluta>/claude-relay hook ...`. Migra entradas relay antiguas con
-    matcher `rate_limit`; no toca los demás hooks ni sus matchers, incluso si
-    compartían grupo con relay. Si ya hay
-    `statusLine` que no es de relay, la guarda en `wrapped_statusline` y pone
-    `{"type":"command","command":"<ruta>/claude-relay statusline","refreshInterval":60}`.
-  - Backup `settings.json.relay-backup-<ts>` antes de escribir. Validar el JSON
-    resultante antes del `mv`.
-  - `--with-agent` copia `agents/relay.md` a `~/.claude/agents/relay.md`.
-  - `--dry-run` muestra el diff y no escribe nada.
+`claude-relay install [--profiles a,b,c | --profile name=dir]... [--settings PATH]... [--with-agent] [--warn-at N] [--handoff-at N] [--dry-run]`
+: - Write the pool. `--profiles a,b` resolves each name to
+    `${CLAUDE_PROFILES_ROOT:-~/.claude-profiles}/<name>` (must exist);
+    `--profile name=dir` supports arbitrary paths. With no profiles specified,
+    use `default=~/.claude`.
+  - Symlink `~/.local/bin/claude-relay` → the repo's `bin/claude-relay` (warn if
+    `~/.local/bin` is not on PATH).
+  - Target settings: the supplied `--settings` paths; otherwise,
+    `~/.claude/settings.json` when `claude-profile` is on PATH (because it
+    re-synchronizes from there); otherwise, `settings.json` in each pool config_dir.
+  - Merge with jq, **additively and idempotently**: add a group whose command
+    is `<absolute path>/claude-relay hook ...` to `hooks.UserPromptSubmit`,
+    `hooks.PostToolUse` (no matcher = all tools) and `hooks.StopFailure`
+    (no matcher). Migrate old relay entries with matcher `rate_limit`; leave
+    other hooks and their matchers untouched, even if they shared a group
+    with relay. If a non-relay `statusLine` already exists, save it in
+    `wrapped_statusline` and set
+    `{"type":"command","command":"<path>/claude-relay statusline","refreshInterval":60}`.
+  - Back up to `settings.json.relay-backup-<ts>` before writing. Validate the
+    resulting JSON before `mv`.
+  - `--with-agent` copies `agents/relay.md` to `~/.claude/agents/relay.md`.
+  - `--dry-run` shows the diff and writes nothing.
 
 `claude-relay uninstall [--settings PATH]... [--purge]`
-: Saca solo lo que tiene `claude-relay` en el comando, restaura
-  `wrapped_statusline` si la había, borra el symlink y el agente instalado.
-  Quita entradas relay tanto antiguas (matcher `rate_limit`) como nuevas
-  (sin matcher), conservando los hooks ajenos e idempotencia.
-  `--purge` borra también config y estado.
+: Remove only entries with `claude-relay` in the command, restore
+  `wrapped_statusline` if there was one, and delete the symlink and installed
+  agent. Remove both old relay entries (matcher `rate_limit`) and new ones
+  (no matcher), preserving unrelated hooks and idempotence.
+  `--purge` also deletes configuration and state.
 
 `claude-relay doctor`
-: Chequea jq, versión de bash, `claude` en PATH, pool válido, settings con los
-  hooks instalados, y para cada perfil si hay dato de uso y de cuándo.
+: Check jq, Bash version, `claude` on PATH, a valid pool, settings with installed
+  hooks, and whether each profile has usage data and how old it is.
 
-`claude-relay --version`, `claude-relay help [subcomando]`.
+`claude-relay --version`, `claude-relay help [subcommand]`.
 
 ## agents/relay.md
 
-Subagente envoltorio (frontmatter `name: relay`, `tools: Bash`, `model: haiku`),
-en el estilo de un forwarder: no investiga ni resuelve, solo reenvía la tarea
-completa con **una** llamada Bash a
-`claude-relay run --pick --exclude <perfil actual> -- -p "<tarea>" --output-format text`
-(perfil actual: `claude-relay status --json`). Lectura por defecto
-(`--permission-mode plan`); si la tarea pide escribir, `--permission-mode
-acceptEdits`. Avisar que el hijo no ve la conversación (la tarea debe ir
-completa), que se cobra a la cuenta elegida y cuál se usó. Tareas largas:
-`run_in_background`.
+Wrapper subagent (frontmatter `name: relay`, `tools: Bash`, `model: haiku`),
+acting as a forwarder: it does not investigate or solve the task, only forwards
+it in full with **one** Bash call to
+`claude-relay run --pick --exclude <current profile> -- -p "<task>" --output-format text`
+(current profile: `claude-relay status --json`). Read-only by default
+(`--permission-mode plan`); if the task requires writing, `--permission-mode
+acceptEdits`. Tell the user that the child does not see the conversation (the
+task must be complete), that usage is charged to the selected account, and
+which account was used. Long tasks: `run_in_background`.
 
 ## Tests (tests/run.sh)
 
-Bash puro con `HOME`, `XDG_*` y config_dirs temporales y un `claude` falso en
-PATH que registra argv, cwd y `CLAUDE_CONFIG_DIR` / vars de auth. Casos mínimos:
+Pure Bash with temporary `HOME`, `XDG_*` and config_dirs, and a fake `claude`
+on PATH that records argv, cwd and `CLAUDE_CONFIG_DIR` / authentication variables.
+Minimum cases:
 
-- statusline escribe `usage/<perfil>.json` con y sin `rate_limits`; fuera del
-  pool no escribe; con `wrapped_statusline` concatena la salida.
-- pick: menor puntaje gana; ventana vencida cuenta 0; sin dato = 50; >= 97
-  descartado; `--exclude`; empate por orden; sin candidatos → exit 3.
-- guard: < 90 sin salida; 90 → aviso suave una sola vez por sesión; 97 → aviso
-  fuerte con la ruta del handoff; JSON válido con el `hookEventName` correcto;
-  fuera del pool / JSON roto → exit 0 sin salida.
-- handoff: copia jsonl y directorio hermano a `projects/<mismo nombre>/`,
-  permisos 600, registra `last-handoff.json`, no pisa destino más nuevo, elige
-  la sesión más reciente del cwd si no se da una.
-- run/resume: el claude falso recibe el `CLAUDE_CONFIG_DIR` correcto, sin
-  variables de auth, con `--resume <sid>` y el cwd original.
-- install/uninstall sobre un settings.json con hooks ajenos (como los de
-  Superset): idempotente (dos installs = mismo resultado), conserva lo ajeno,
-  uninstall vuelve al original byte a byte salvo formato de jq; statusLine
-  previa envuelta y restaurada; `--dry-run` no escribe.
-- agotamiento: sin medición se descarta; TTL por config/env, reset futuro,
-  plazos manuales, expiración, borrado idempotente y recuperación solo con una
-  captura más nueva y por debajo del umbral.
-- stop-failure: registro saneado y privado, clasificación de los seis campos,
-  errores ajenos sin handoff, marca antes de copiar, notificación aun sin
-  transcript o con error de copia; no falla sin notificador.
-- migración de StopFailure con matcher antiguo, incluso en grupos mixtos.
-- el claude falso recibe `CLAUDE_CODE_CHILD_SESSION` sin definir tanto en run
-  como resume. La muestra Team sin `seven_day` se mide correctamente.
+- statusline writes `usage/<profile>.json` with and without `rate_limits`;
+  outside the pool it does not write; with `wrapped_statusline` it appends output.
+- pick: lowest score wins; expired window counts as 0; no data = 50; >= 97 is
+  excluded; `--exclude`; ties by order; no candidates → exit 3.
+- guard: < 90 no output; 90 → soft warning once per session; 97 → strong warning
+  with the handoff path; valid JSON with the correct `hookEventName`;
+  outside the pool / broken JSON → exit 0 with no output.
+- handoff: copies jsonl and sibling directory to `projects/<same name>/`,
+  mode 600, records `last-handoff.json`, preserves a newer destination, selects
+  the most recent session for the cwd when none is specified.
+- run/resume: fake claude receives the correct `CLAUDE_CONFIG_DIR`, without
+  authentication variables, with `--resume <sid>` and the original cwd.
+- install/uninstall on a settings.json with unrelated hooks (such as Superset's):
+  idempotent (two installs = same result), preserves unrelated entries,
+  uninstall returns to the original byte for byte except for jq formatting;
+  previous statusLine wrapped and restored; `--dry-run` writes nothing.
+- exhaustion: excluded without a measurement; TTL from config/env, future reset,
+  manual deadlines, expiration, idempotent clearing and recovery only with a
+  newer capture below the threshold.
+- stop-failure: sanitized private logging, classification of all six fields,
+  unrelated errors without handoff, marking before copying, notification even
+  without a transcript or on copy failure; no failure without a notifier.
+- StopFailure migration from the old matcher, including mixed groups.
+- fake claude receives `CLAUDE_CODE_CHILD_SESSION` unset in both run and resume.
+  The Team sample without `seven_day` is measured correctly.
 
-Correr `bash tests/run.sh` y `/bin/bash tests/run.sh`: las 106 pruebas previas
-más las regresiones nuevas deben pasar. Correr `shellcheck` si está instalado.
-La suite no verifica Claude real, prompts de confianza ni ejecución de
-statusline en modo headless; esas observaciones son de las pruebas manuales.
+Run `bash tests/run.sh` and `/bin/bash tests/run.sh`: the previous 106 tests plus
+new regressions must pass. Run `shellcheck` if installed. The suite does not
+verify real Claude, trust prompts or headless statusline execution; those
+observations come from manual tests.

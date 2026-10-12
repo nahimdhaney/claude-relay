@@ -17,7 +17,7 @@ cmd_statusline() {
     ($data|measurement(50)) as $m |
     ($p+" · "+(if $m.known then
       [if $m.five_hour!=null then "5h \($m.five_hour.effective)%" else empty end,
-       if $m.seven_day!=null then "7d \($m.seven_day.effective)%" else empty end]|join(" · ") else "sin dato" end)) as $line |
+       if $m.seven_day!=null then "7d \($m.seven_day.effective)%" else empty end]|join(" · ") else "no data" end)) as $line |
     [($data|tojson),($m.known|tostring),$line,
      (if $receipts|has($settings) then $receipts[$settings].statusLine.command // "" else $wrapped end)] | .[]')
   # The first three values cannot contain literal newlines. Preserve the rest
@@ -59,7 +59,7 @@ hook_guard() {
     --arg w "$WARN_AT" --arg h "$HANDOFF_AT" --arg u "$UNKNOWN_SCORE" '
     include "usage";
     ([$w,$h,$u]|map(tonumber)) as $cfg |
-    if ($cfg|all(.>=0 and .<=100)) and $cfg[0]<=$cfg[1] then . else error("Umbrales inválidos") end |
+    if ($cfg|all(.>=0 and .<=100)) and $cfg[0]<=$cfg[1] then . else error("Invalid thresholds") end |
     select(type=="object" and (.session_id|type=="string") and (.cwd|type=="string") and (.transcript_path|type=="string") and
       (.hook_event_name=="UserPromptSubmit" or .hook_event_name=="PostToolUse")) |
     . as $input | ($usage[0]|measurement($cfg[2])) as $m |
@@ -72,7 +72,7 @@ hook_guard() {
   marker="$STATE_DIR/warned/$CURRENT_PROFILE-$sid-$level-$reset"
   [ ! -e "$marker" ] || return 0
   if [ "$level" = warn ]; then
-    context="Cuota del perfil $CURRENT_PROFILE en $score %. Ve cerrando el trabajo y no empieces tareas largas."
+    context="Profile $CURRENT_PROFILE quota usage is at $score %. Start wrapping up the work and do not start long tasks."
   else
     cwd=$(printf '%s' "$input" | jq -r .cwd)
     transcript=$(printf '%s' "$input" | jq -r .transcript_path)
@@ -88,8 +88,8 @@ hook_guard() {
     record=$(jq -n --arg from "$CURRENT_PROFILE" --arg to "${best:-auto}" --arg sid "$sid" --arg cwd "$cwd" --arg t "$transcript" --arg md "$md" '{from:$from,to:$to,session_id:$sid,cwd:$cwd,transcript:$t,source_transcript:$t,handoff_md:$md,at:now}')
     printf '%s' "$record" | atomic_json "$STATE_DIR/sessions/$CURRENT_PROFILE-$sid.json"
     printf '%s' "$record" | atomic_json "$STATE_DIR/last-handoff.json"
-    context="Cuota del perfil $CURRENT_PROFILE en $score %. Deja de empezar trabajo nuevo. Escribe YA el handoff en la ruta exacta $md, en el idioma de la conversación, con estas secciones: Objetivo; Estado (hecho / en curso / pendiente); Archivos y ramas tocados; Decisiones y por qué; Próximos pasos concretos; Comandos para verificar; Riesgos/dudas. Después dile al usuario que ejecute claude-relay resume --last en su terminal."
-    [ -z "$best" ] || context="$context El mejor perfil ahora es $best; puede elegirlo con claude-relay resume --last --to $best."
+    context="Profile $CURRENT_PROFILE quota usage is at $score %. Stop starting new work. Write the handoff NOW at the exact path $md, in the language of the conversation, with these sections: Goal; Status (done / in progress / pending); Files and branches touched; Decisions and why; Concrete next steps; Commands to verify; Risks/open questions. Then tell the user to run claude-relay resume --last in their terminal."
+    [ -z "$best" ] || context="$context The best profile right now is $best; the user can select it with claude-relay resume --last --to $best."
   fi
   output=$(jq -n --arg e "$event" --arg c "$context" '{hookSpecificOutput:{hookEventName:$e,additionalContext:$c}}')
   mkdir -p "$STATE_DIR/warned"
@@ -118,7 +118,7 @@ hook_stop_failure() {
     [ .error,.error_type,.error_details,.matcher,.reason,.message ] |
     any(.[]; .=="rate_limit" or (tostring|test("rate.?limit|usage limit|session limit|weekly limit|hit your .*limit|limit reached";"i")))' >/dev/null; then return 0; fi
   mark_exhausted "$CURRENT_PROFILE" stop-failure
-  message="cuenta $CURRENT_PROFILE agotada; no se pudo copiar la sesión"
+  message="account $CURRENT_PROFILE exhausted; could not copy the session"
   if printf '%s' "$input" | jq -e 'all([.session_id,.transcript_path,.cwd][]; type=="string" and length>0)' >/dev/null; then
     sid=$(printf '%s' "$input" | jq -r .session_id)
     transcript=$(printf '%s' "$input" | jq -r .transcript_path)
@@ -127,7 +127,7 @@ hook_stop_failure() {
     # failed copies must not leave a successful handoff record or skip notice.
     if record=$("$BASH" "$RELAY_BIN" handoff --from "$CURRENT_PROFILE" --to auto --session "$sid" --transcript "$transcript" --cwd "$cwd" --quiet --json 2>/dev/null); then
       to=$(printf '%s' "$record" | jq -er .to)
-      message="cuenta $CURRENT_PROFILE agotada; sesión copiada al perfil $to. Ejecuta claude-relay resume --last."
+      message="account $CURRENT_PROFILE exhausted; session copied to profile $to. Run claude-relay resume --last."
     fi
   fi
   if [ "$(uname -s)" = Darwin ] && command -v osascript >/dev/null 2>&1; then

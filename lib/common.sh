@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sourced by the CLI, which enables strict mode and umask 077.
 die() { printf 'claude-relay: %s\n' "$*" >&2; exit 1; }
-need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "Falta valor para $1"; }
+need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "Missing value for $1"; }
 safe_name() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; }
 absolute_path() {
   case "$1" in /*) printf '%s\n' "$1" ;; '~') printf '%s\n' "$HOME" ;; '~/'*) printf '%s/%s\n' "$HOME" "${1#\~/}" ;; *) printf '%s/%s\n' "$PWD" "$1" ;; esac
@@ -32,31 +32,31 @@ init_config() {
   # Safe workers validate the values they need when processing the event.
   if [ "${SAFE_WORKER:-false}" = true ]; then return; fi
   jq -en --arg w "$WARN_AT" --arg h "$HANDOFF_AT" --arg u "$UNKNOWN_SCORE" '
-    [$w,$h,$u] | map(tonumber) | all(.>=0 and .<=100) and (.[0]<=.[1])' >/dev/null || die 'Umbrales inválidos (0–100, warn_at <= handoff_at).'
-  jq -en --arg ttl "$EXHAUSTED_TTL" '$ttl|tonumber|.>0 and .==floor' >/dev/null || die 'exhausted_ttl debe ser un entero positivo (segundos).'
+    [$w,$h,$u] | map(tonumber) | all(.>=0 and .<=100) and (.[0]<=.[1])' >/dev/null || die 'Invalid thresholds (0–100, warn_at <= handoff_at).'
+  jq -en --arg ttl "$EXHAUSTED_TTL" '$ttl|tonumber|.>0 and .==floor' >/dev/null || die 'exhausted_ttl must be a positive integer (seconds).'
 }
 load_pool() {
   POOL_NAMES=() POOL_DIRS=() POOL_COUNT=0 CURRENT_PROFILE=
   local name dir extra resolved current i
-  [ -f "$POOL_FILE" ] || die "No existe el pool: $POOL_FILE; ejecuta install."
+  [ -f "$POOL_FILE" ] || die "Pool does not exist: $POOL_FILE; run install."
   current=$(resolve_dir "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" || true)
   while IFS=$'\t' read -r name dir extra || [ -n "$name" ]; do
     case "$name" in ''|'#'*) continue ;; esac
-    safe_name "$name" || die "Nombre de perfil inválido: $name"
-    [ -n "$dir" ] && [ -z "$extra" ] || die "Línea inválida en pool: $name"
+    safe_name "$name" || die "Invalid profile name: $name"
+    [ -n "$dir" ] && [ -z "$extra" ] || die "Invalid line in pool: $name"
     case "$dir" in /*) ;; *) dir=$(absolute_path "$dir") ;; esac
     resolved=$(resolve_dir "$dir" || true)
     [ -z "$resolved" ] || dir=$resolved
     i=0
     while [ "$i" -lt "$POOL_COUNT" ]; do
-      [ "${POOL_NAMES[$i]}" != "$name" ] && [ "${POOL_DIRS[$i]}" != "$dir" ] || die "Perfil o directorio duplicado: $name"
+      [ "${POOL_NAMES[$i]}" != "$name" ] && [ "${POOL_DIRS[$i]}" != "$dir" ] || die "Duplicate profile or directory: $name"
       i=$((i+1))
     done
     POOL_NAMES[$POOL_COUNT]=$name POOL_DIRS[$POOL_COUNT]=$dir
     POOL_COUNT=$((POOL_COUNT+1))
     if [ -n "$current" ] && [ "$current" = "$dir" ]; then CURRENT_PROFILE=$name; fi
   done < "$POOL_FILE"
-  [ "$POOL_COUNT" -gt 0 ] || die 'Pool vacío.'
+  [ "$POOL_COUNT" -gt 0 ] || die 'Empty pool.'
 }
 profile_dir() {
   local i=0
@@ -64,7 +64,7 @@ profile_dir() {
     if [ "${POOL_NAMES[$i]}" = "$1" ]; then printf '%s\n' "${POOL_DIRS[$i]}"; return; fi
     i=$((i+1))
   done
-  die "Perfil desconocido: $1"
+  die "Unknown profile: $1"
 }
 # All persisted JSON is checked before replacing an existing file.
 atomic_json() (

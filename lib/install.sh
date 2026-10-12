@@ -12,13 +12,13 @@ read_settings() {
   if [ -e "$1" ]; then
     jq -ce 'select(type=="object") | select((.hooks==null or (.hooks|type)=="object")) |
       select(all((.hooks // {})[]; type=="array")) |
-      select(all((.hooks // {})[][]; type=="object" and (.hooks|type)=="array"))' "$1" || die "Settings inválido: $1"
+      select(all((.hooks // {})[][]; type=="object" and (.hooks|type)=="array"))' "$1" || die "Invalid settings: $1"
   else printf '{}\n'; fi
 }
 write_settings() {
   local file=$1 data=$2 backup
   printf '%s' "$data" | jq -e 'type=="object"' >/dev/null
-  [ ! -L "$file" ] || die "Settings simbólico rechazado: $file"
+  [ ! -L "$file" ] || die "Symlink settings file rejected: $file"
   mkdir -p "$(dirname "$file")"
   if [ -f "$file" ]; then
     backup=$(mktemp "$file.relay-backup-$(now_stamp).XXXXXX")
@@ -29,15 +29,15 @@ write_settings() {
 }
 add_install_profile() {
   local name=$1 dir=$2 i=0
-  safe_name "$name" || die "Nombre inválido: $name"
-  dir=$(resolve_dir "$dir") || die "No existe el perfil: $dir"
-  case "$dir" in *$'\n'*|*$'\t'*) die 'La ruta del perfil no admite tabs ni saltos de línea.' ;; esac
+  safe_name "$name" || die "Invalid name: $name"
+  dir=$(resolve_dir "$dir") || die "Profile directory does not exist: $dir"
+  case "$dir" in *$'\n'*|*$'\t'*) die 'Profile paths cannot contain tabs or newlines.' ;; esac
   while [ "$i" -lt "$INSTALL_COUNT" ]; do
     if [ "${INSTALL_NAMES[$i]}" = "$name" ]; then
-      [ "${INSTALL_DIRS[$i]}" = "$dir" ] || die "Perfil duplicado: $name"
+      [ "${INSTALL_DIRS[$i]}" = "$dir" ] || die "Duplicate profile: $name"
       return
     fi
-    [ "${INSTALL_DIRS[$i]}" != "$dir" ] || die "Directorio duplicado: $dir"
+    [ "${INSTALL_DIRS[$i]}" != "$dir" ] || die "Duplicate directory: $dir"
     i=$((i+1))
   done
   INSTALL_NAMES[$INSTALL_COUNT]=$name INSTALL_DIRS[$INSTALL_COUNT]=$dir
@@ -58,16 +58,16 @@ cmd_install() {
         done
         shift 2 ;;
       --profile)
-        need_value "$@"; case "$2" in *=*) ;; *) die 'Usa --profile nombre=dir' ;; esac
+        need_value "$@"; case "$2" in *=*) ;; *) die 'Use --profile name=dir' ;; esac
         add_install_profile "${2%%=*}" "${2#*=}"; shift 2 ;;
       --settings) need_value "$@"; settings[$settings_count]=$(absolute_path "$2"); settings_count=$((settings_count+1)); shift 2 ;;
       --warn-at) need_value "$@"; warn=$2; shift 2 ;;
       --handoff-at) need_value "$@"; handoff=$2; shift 2 ;;
       --with-agent) agent=true; shift ;; --dry-run) dry=true; shift ;;
-      *) die "Opción desconocida: $1" ;;
+      *) die "Unknown option: $1" ;;
     esac
   done
-  jq -en --arg w "$warn" --arg h "$handoff" '[$w,$h]|map(tonumber)|.[0]>=0 and .[0]<=.[1] and .[1]<=100' >/dev/null || die 'Umbrales inválidos.'
+  jq -en --arg w "$warn" --arg h "$handoff" '[$w,$h]|map(tonumber)|.[0]>=0 and .[0]<=.[1] and .[1]<=100' >/dev/null || die 'Invalid thresholds.'
   if [ "$INSTALL_COUNT" -eq 0 ]; then add_install_profile default "$HOME/.claude"; fi
   if [ "$settings_count" -eq 0 ]; then
     if command -v claude-profile >/dev/null 2>&1; then
@@ -80,17 +80,17 @@ cmd_install() {
   fi
   link="$HOME/.local/bin/claude-relay"
   if [ -e "$link" ] || [ -L "$link" ]; then
-    [ -L "$link" ] && [ "$(readlink "$link")" = "$RELAY_BIN" ] || die "Ya existe un ejecutable ajeno: $link"
+    [ -L "$link" ] && [ "$(readlink "$link")" = "$RELAY_BIN" ] || die "An unrelated executable already exists: $link"
   fi
   if $agent && [ -e "$HOME/.claude/agents/relay.md" ]; then
-    cmp -s "$RELAY_ROOT/agents/relay.md" "$HOME/.claude/agents/relay.md" || die 'Ya existe un agente relay.md diferente.'
+    cmp -s "$RELAY_ROOT/agents/relay.md" "$HOME/.claude/agents/relay.md" || die 'A different relay.md agent already exists.'
   fi
   if [ -f "$CONFIG_DIR/installed-settings.json" ]; then receipts=$(jq -ce 'select(type=="object")' "$CONFIG_DIR/installed-settings.json"); fi
   printf -v command '%q' "$RELAY_BIN"
   i=0
   while [ "$i" -lt "$settings_count" ]; do
     file=${settings[$i]}
-    [ ! -L "$file" ] || die "Settings simbólico rechazado: $file"
+    [ ! -L "$file" ] || die "Symlink settings file rejected: $file"
     original=$(read_settings "$file")
     # Keep hook provenance, but respect a statusline the user changed since
     # installation. Never overwrite its original with our own wrapper.
@@ -120,10 +120,10 @@ cmd_install() {
       case "$entry" in warn_at=*|handoff_at=*|unknown_score=*|exhausted_ttl=*|wrapped_statusline=*) ;; *) config="$config$entry"$'\n' ;; esac
     done < "$CONFIG_DIR/config"
   fi
-  case "$wrapped" in *$'\n'*) die 'La statusline previa contiene saltos de línea; no puede guardarse como clave=valor.' ;; esac
+  case "$wrapped" in *$'\n'*) die 'The previous statusline contains newlines; it cannot be saved as key=value.' ;; esac
   config="${config}warn_at=$warn"$'\n'"handoff_at=$handoff"$'\n'"unknown_score=$UNKNOWN_SCORE"$'\n'"exhausted_ttl=$EXHAUSTED_TTL"$'\n'"wrapped_statusline=$wrapped"$'\n'
   if $dry; then
-    printf 'Pool propuesto:\n%sConfiguración propuesta:\n%s' "$pool" "$config"
+    printf 'Proposed pool:\n%sProposed configuration:\n%s' "$pool" "$config"
     i=0
     while [ "$i" -lt "$settings_count" ]; do
       printf '\nSettings: %s\n' "${settings[$i]}"
@@ -131,7 +131,7 @@ cmd_install() {
       i=$((i+1))
     done
     printf '\nSymlink: %s -> %s\n' "$link" "$RELAY_BIN"
-    if $agent; then printf 'Agente: %s/.claude/agents/relay.md\n' "$HOME"; fi
+    if $agent; then printf 'Agent: %s/.claude/agents/relay.md\n' "$HOME"; fi
     return
   fi
   printf '%s' "$pool" | atomic_text "$POOL_FILE"
@@ -142,13 +142,13 @@ cmd_install() {
   mkdir -p "$HOME/.local/bin"
   [ -L "$link" ] || ln -s "$RELAY_BIN" "$link"
   if $agent; then atomic_text "$HOME/.claude/agents/relay.md" < "$RELAY_ROOT/agents/relay.md"; fi
-  case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) printf 'Añade %s/.local/bin a PATH.\n' "$HOME" >&2 ;; esac
-  printf 'claude-relay instalado (%s perfiles).\n' "$INSTALL_COUNT"
+  case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) printf 'Add %s/.local/bin to PATH.\n' "$HOME" >&2 ;; esac
+  printf 'claude-relay installed (%s profiles).\n' "$INSTALL_COUNT"
 }
 cmd_uninstall() {
   local settings=() count=0 purge=false file receipt receipts='{}' original updated i=0 remaining link
   while [ "$#" -gt 0 ]; do
-    case "$1" in --settings) need_value "$@"; settings[$count]=$(absolute_path "$2"); count=$((count+1)); shift 2 ;; --purge) purge=true; shift ;; *) die "Opción desconocida: $1" ;; esac
+    case "$1" in --settings) need_value "$@"; settings[$count]=$(absolute_path "$2"); count=$((count+1)); shift 2 ;; --purge) purge=true; shift ;; *) die "Unknown option: $1" ;; esac
   done
   if [ -f "$CONFIG_DIR/installed-settings.json" ]; then receipts=$(cat "$CONFIG_DIR/installed-settings.json"); fi
   if [ "$count" -eq 0 ]; then
@@ -179,36 +179,36 @@ cmd_uninstall() {
   if [ -L "$link" ] && [ "$(readlink "$link")" = "$RELAY_BIN" ]; then rm -f "$link"; fi
   if [ -f "$HOME/.claude/agents/relay.md" ] && cmp -s "$RELAY_ROOT/agents/relay.md" "$HOME/.claude/agents/relay.md"; then rm -f "$HOME/.claude/agents/relay.md"; fi
   if $purge; then rm -rf "$CONFIG_DIR" "$STATE_DIR"; fi
-  printf 'claude-relay desinstalado.\n'
+  printf 'claude-relay uninstalled.\n'
 }
 cmd_doctor() {
-  [ "$#" -eq 0 ] || die 'Uso: doctor'
+  [ "$#" -eq 0 ] || die 'Usage: doctor'
   local failed=0 i=0 file m jq_version
   jq_version=$(jq --version)
   printf 'jq: %s\nBash: %s\n' "$jq_version" "$BASH_VERSION"
   if [[ "$jq_version" =~ ^jq-([0-9]+)\.([0-9]+) ]] &&
     { [ "${BASH_REMATCH[1]}" -gt 1 ] || { [ "${BASH_REMATCH[1]}" -eq 1 ] && [ "${BASH_REMATCH[2]}" -ge 6 ]; }; }; then :
-  else printf 'Se requiere jq >= 1.6.\n'; failed=1; fi
+  else printf 'jq >= 1.6 is required.\n'; failed=1; fi
   if [ "${BASH_VERSINFO[0]}" -lt 3 ] || { [ "${BASH_VERSINFO[0]}" -eq 3 ] && [ "${BASH_VERSINFO[1]}" -lt 2 ]; }; then
-    printf 'Se requiere Bash >= 3.2.\n'; failed=1
+    printf 'Bash >= 3.2 is required.\n'; failed=1
   fi
-  if command -v "${CLAUDE_RELAY_CLAUDE_BIN:-claude}" >/dev/null 2>&1; then printf 'claude: disponible\n'; else printf 'claude: falta\n'; failed=1; fi
+  if command -v "${CLAUDE_RELAY_CLAUDE_BIN:-claude}" >/dev/null 2>&1; then printf 'claude: available\n'; else printf 'claude: missing\n'; failed=1; fi
   load_pool
-  printf 'Pool: %s perfiles\n' "$POOL_COUNT"
+  printf 'Pool: %s profiles\n' "$POOL_COUNT"
   while [ "$i" -lt "$POOL_COUNT" ]; do
-    if [ ! -d "${POOL_DIRS[$i]}" ]; then printf '%s: directorio ausente\n' "${POOL_NAMES[$i]}"; failed=1; fi
+    if [ ! -d "${POOL_DIRS[$i]}" ]; then printf '%s: missing directory\n' "${POOL_NAMES[$i]}"; failed=1; fi
     m=$(measurement "${POOL_NAMES[$i]}")
-    printf '%s: %s\n' "${POOL_NAMES[$i]}" "$(printf '%s' "$m" | jq -r 'if .known then "dato de hace \(.age_seconds)s" else "sin dato" end')"
+    printf '%s: %s\n' "${POOL_NAMES[$i]}" "$(printf '%s' "$m" | jq -r 'if .known then "data from \(.age_seconds)s ago" else "no data" end')"
     i=$((i+1))
   done
-  if [ ! -f "$CONFIG_DIR/installed-settings.json" ] || ! jq -e 'type=="object" and length>0' "$CONFIG_DIR/installed-settings.json" >/dev/null 2>&1; then printf 'Settings: sin instalación registrada\n'; failed=1
+  if [ ! -f "$CONFIG_DIR/installed-settings.json" ] || ! jq -e 'type=="object" and length>0' "$CONFIG_DIR/installed-settings.json" >/dev/null 2>&1; then printf 'Settings: no installation recorded\n'; failed=1
   else
     while IFS= read -r file; do
       if [ -f "$file" ] && jq -e '
         (.statusLine.command // "" | contains("claude-relay"))' "$file" >/dev/null 2>&1 &&
         jq -e '.hooks as $h | all(["UserPromptSubmit","PostToolUse","StopFailure"][]; . as $e | any($h[$e][]?.hooks[]?; (.command // "" | contains("claude-relay hook"))))' "$file" >/dev/null 2>&1; then
         printf 'Settings: OK %s\n' "$file"
-      else printf 'Settings: faltan hooks/statusline en %s\n' "$file"; failed=1; fi
+      else printf 'Settings: missing hooks/statusline in %s\n' "$file"; failed=1; fi
     done < <(jq -r 'keys[]' "$CONFIG_DIR/installed-settings.json")
   fi
   return "$failed"

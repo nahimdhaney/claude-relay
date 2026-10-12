@@ -1,22 +1,39 @@
 # claude-relay
 
-`claude-relay` ayuda a continuar un trabajo de Claude Code entre perfiles con
-cuentas distintas. Cada perfil usa su propio `CLAUDE_CONFIG_DIR`. La herramienta
-guarda la cuota que recibe la statusline, elige el perfil con más margen y copia
-una conversación para retomarla con `claude --resume`.
+`claude-relay` helps you continue Claude Code work across profiles that use
+separate accounts. Each profile has its own `CLAUDE_CONFIG_DIR`. The tool saves
+quota usage received by the statusline, selects the profile with the most
+remaining capacity, and copies a conversation so you can continue it with
+`claude --resume`.
 
-Antes de agotar la cuota, los hooks piden al modelo que escriba un handoff con el
-estado del trabajo. El cambio de cuenta se hace desde tu terminal; el hook no
-lanza otra sesión interactiva por su cuenta.
+Before the quota runs out, hooks ask the model to write a handoff describing
+the state of the work. You switch accounts from your terminal; the hook does
+not start another interactive session on its own.
 
-## Requisitos e instalación
+## Quick start
 
-Necesitas Claude Code instalado y autenticado por separado en los perfiles que
-vayas a usar, Bash 3.2 o posterior y `jq` 1.6 o posterior. Se utilizan las
-utilidades habituales de macOS/Linux. No hay dependencias de red ni se consultan
-endpoints de cuota.
+With Claude Code installed and signed in, Bash 3.2+ and `jq` 1.6+ available,
+clone this repository, enter its directory, and run:
 
-Clona este repositorio, entra en él y ejecuta:
+```bash
+./install.sh --dry-run
+./install.sh
+export PATH="$HOME/.local/bin:$PATH"
+claude-relay doctor
+claude-relay status
+```
+
+This installs the default profile from `$HOME/.claude`. To switch between
+accounts, add your separately authenticated profiles using the options below.
+
+## Requirements and installation
+
+You need Claude Code installed and authenticated separately in each profile
+you plan to use, Bash 3.2 or later, and `jq` 1.6 or later. The tool uses standard
+macOS/Linux utilities. It has no network dependencies and does not query quota
+endpoints.
+
+Clone this repository, enter its directory, and run:
 
 ```bash
 ./install.sh --dry-run
@@ -25,199 +42,210 @@ export PATH="$HOME/.local/bin:$PATH"
 claude-relay doctor
 ```
 
-Sin opciones se usa `default=$HOME/.claude`; ese directorio debe existir. Añade
-la línea de PATH a la configuración de tu shell para conservarla. Mantén el
-checkout en su ubicación: el ejecutable instalado es un symlink al repositorio.
+With no options, the profile is `default=$HOME/.claude`; that directory must
+exist. Add the PATH line to your shell configuration to make it persistent.
+Keep the checkout in place: the installed executable is a symlink to the
+repository.
 
-Si ya utilizas `claude-profile`:
+If you already use `claude-profile`:
 
 ```bash
-./install.sh --profiles personal,trabajo --with-agent
+./install.sh --profiles personal,work --with-agent
 ```
 
-Los nombres se resuelven bajo `${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}`.
-También puedes indicar directorios arbitrarios, incluyendo rutas con espacios:
+Names resolve under `${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}`.
+You can also specify arbitrary directories, including paths with spaces:
 
 ```bash
 ./install.sh \
   --profile "personal=$HOME/.claude" \
-  --profile "trabajo=$HOME/perfiles/Claude trabajo" \
+  --profile "work=$HOME/profiles/Claude work" \
   --warn-at 90 --handoff-at 97 --with-agent
 ```
 
-Usa únicamente cuentas y perfiles que tengas autorización para utilizar. Relay
-no inicia sesión, no transporta credenciales y no comparte autenticación entre
-perfiles. Para `status`, solo extrae email y organización de
+Use only accounts and profiles you are authorized to use. Relay does not sign
+in, transfer credentials or share authentication between profiles. For
+`status`, it extracts only the email address and organization from
 `<config_dir>/.claude.json`.
 
-Puedes repetir `--profiles`, `--profile` y `--settings`. El pool se reemplaza por
-la lista indicada, en ese orden. Si no pasas `--settings`, se modifica
-`~/.claude/settings.json` cuando `claude-profile` está disponible en PATH (es su
-fuente de sincronización); en otro caso, el `settings.json` de cada perfil.
+You can repeat `--profiles`, `--profile` and `--settings`. The pool is replaced
+with the supplied list, in that order. Without `--settings`, installation
+modifies `~/.claude/settings.json` when `claude-profile` is on PATH (that file
+is its synchronization source); otherwise, it modifies each profile's
+`settings.json`.
 
-La instalación agrega grupos a `UserPromptSubmit`, `PostToolUse` y `StopFailure`
-(sin matcher), conserva los hooks ajenos y envuelve la statusline anterior.
-Repetir la instalación migra el antiguo matcher `rate_limit` sin duplicar
-grupos ni cambiar los matchers de hooks ajenos. Antes de cada escritura se crea
-`settings.json.relay-backup-<fecha>.<sufijo>` y el JSON nuevo se valida antes del
-reemplazo atómico. `--dry-run` muestra los cambios sin escribir archivos.
+Installation adds groups to `UserPromptSubmit`, `PostToolUse` and `StopFailure`
+(without a matcher), preserves unrelated hooks, and wraps the previous
+statusline. Reinstalling migrates the old `rate_limit` matcher without
+duplicating groups or changing unrelated hooks' matchers. Before each write,
+it creates `settings.json.relay-backup-<date>.<suffix>` and validates the new
+JSON before replacing the file atomically. `--dry-run` shows the changes
+without writing files.
 
-## Uso diario
+## Daily use
 
 ```bash
 claude-relay status
 claude-relay status --json
 claude-relay pick
-claude-relay pick --exclude trabajo --json
+claude-relay pick --exclude work --json
 claude-relay run --pick --
 claude-relay run --profile personal -- --model sonnet
 ```
 
-`status` muestra la cuenta, el porcentaje y reinicio local de ambas ventanas,
-la antigüedad del dato, el puntaje y `*` en el perfil actual. Este se identifica
-comparando la ruta resuelta de `CLAUDE_CONFIG_DIR` (por defecto `~/.claude`) con
-las rutas del pool. Fuera del pool, indica explícitamente `--profile` o `--pick`.
-`run` sin selector usa el perfil actual.
+`status` shows the account, usage percentage and local reset time for both
+windows, data age, score, and `*` beside the current profile. It identifies the
+current profile by comparing the resolved path of `CLAUDE_CONFIG_DIR`
+(default: `~/.claude`) with the pool's paths. Outside the pool, specify
+`--profile` or `--pick` explicitly. `run` without a selector uses the current
+profile.
 
-El puntaje es el mayor porcentaje entre las ventanas de 5 horas y 7 días. Una
-ventana cuyo reinicio ya pasó cuenta como 0 y se marca «reinició». Sin ninguna
-ventana válida se usa 50 por defecto. `pick` elige el menor puntaje, descarta
-perfiles sin directorio o con puntaje de 97 o más y desempata por orden del pool.
-Si no hay candidatos, devuelve código 3. Los perfiles explícitos permiten una
-elección manual aunque no cumplan ese filtro.
+The score is the higher usage percentage of the 5-hour and 7-day windows.
+A window whose reset time has passed counts as 0 and is marked "reset".
+Without any valid windows, the default score is 50. `pick` selects the lowest
+score, excludes profiles with missing directories or scores of 97 or higher,
+and breaks ties by pool order. If there are no candidates, it returns exit
+code 3. Explicit profile selection allows a manual choice even when the
+profile does not meet those filters.
 
-Una cuenta marcada como agotada tiene puntaje 100 hasta que vence la marca;
-`status` muestra «agotada hasta HH:MM» en hora local. Puedes marcarla o liberar
-la marca manualmente:
+An account marked as exhausted has a score of 100 until the mark expires;
+`status` shows "exhausted until HH:MM" in local time. You can set or clear the
+mark manually:
 
 ```bash
 claude-relay exhausted personal
-claude-relay exhausted personal --for 90m   # también 4h o 3600s
-claude-relay exhausted personal --until 1791828000  # epoch en segundos
+claude-relay exhausted personal --for 90m   # also 4h or 3600s
+claude-relay exhausted personal --until 1791828000  # epoch seconds
 claude-relay exhausted personal --clear
 ```
 
-Sin plazo explícito, se usa el último `five_hour.resets_at` conocido si sigue
-en el futuro; si no, `exhausted_ttl` (3600 segundos por defecto). `--for`,
-`--until` y `--clear` son excluyentes. Una captura nueva con cuota válida y
-puntaje menor que `handoff_at` borra la marca si `captured_at` es posterior a
-su creación. Un dato ausente, anterior o todavía alto no la borra.
+Without an explicit duration or deadline, relay uses the last known
+`five_hour.resets_at` if it is still in the future; otherwise, it uses
+`exhausted_ttl` (3600 seconds by default). `--for`, `--until` and `--clear` are
+mutually exclusive. A new capture with valid quota data and a score below
+`handoff_at` clears the mark if its `captured_at` is later than the mark's
+creation time. Missing, older or still-high usage data does not clear it.
 
-Al llegar a 90 %, el modelo recibe una advertencia para ir cerrando. Al llegar
-a 97 %, recibe la ruta exacta de un handoff y sus secciones: objetivo, estado,
-archivos y ramas, decisiones, próximos pasos, verificación y riesgos. El modelo
-debe escribirlo en el idioma de la conversación. Cada nivel se avisa una vez
-por perfil, sesión y reinicio de la ventana que lo disparó.
+At 90%, the model receives a warning to start wrapping up. At 97%, it receives
+the exact handoff path and these section names: Goal; Status (done / in
+progress / pending); Files and branches touched; Decisions and why; Concrete
+next steps; Commands to verify; Risks/open questions. The model must write the
+handoff in the language of the conversation. Each level is announced once per
+profile, session and reset time of the window that triggered it.
 
-Cuando el modelo indique que el handoff está listo, desde tu terminal:
+When the model says the handoff is ready, run this in your terminal:
 
 ```bash
 claude-relay resume --last
-# O elige un destino:
-claude-relay resume --last --to trabajo
+# Or choose a destination:
+claude-relay resume --last --to work
 ```
 
-El hook registra la sesión incluso antes de copiarla, por lo que `--last` puede
-hacer el traspaso pendiente. El hook `StopFailure` registra todos los errores
-recibidos y busca señales de límite de uso en sus campos de error. Si detecta
-un límite, marca primero la cuenta agotada e intenta copiar la sesión al mejor
-perfil. Envía una notificación de escritorio si hay un notificador disponible;
-si falta el transcript o falla el traspaso, avisa «cuenta X agotada; no se pudo
-copiar la sesión». El registro permite investigar si los errores de límite del
-plan llegan realmente a ese hook.
+The hook records the session even before copying it, so `--last` can complete
+a pending transfer. The `StopFailure` hook records every error it receives and
+looks for usage-limit signals in the error fields. If it detects a limit, it
+first marks the account as exhausted, then tries to copy the session to the
+best profile. It sends a desktop notification if a notifier is available;
+if the transcript is missing or the transfer fails, it reports "account X
+exhausted; could not copy the session". The log helps investigate whether plan
+limit errors actually reach this hook.
 
-También puedes hacerlo manualmente, desde el directorio del proyecto:
+You can also transfer manually from the project directory:
 
 ```bash
 claude-relay handoff --from personal --to auto
-claude-relay handoff --from personal --to trabajo --session ID --cwd "$PWD"
-claude-relay handoff --from personal --to trabajo \
-  --transcript /ruta/config/projects/proyecto/ID.jsonl --cwd /ruta/proyecto --json
+claude-relay handoff --from personal --to work --session ID --cwd "$PWD"
+claude-relay handoff --from personal --to work \
+  --transcript /path/to/config/projects/project/ID.jsonl --cwd /path/to/project --json
 claude-relay resume --last
 claude-relay resume --session ID --to auto
 ```
 
-Sin ID ni transcript, se elige el `.jsonl` más reciente por mtime en el proyecto
-del cwd. Con un selector explícito y sin `--cwd`, se intenta recuperar el cwd
-del transcript; si no lo contiene se usa el directorio actual. Un ID presente
-en varios proyectos requiere `--transcript`. Se conserva el nombre del
-directorio de proyecto de origen, sin recalcularlo para el destino.
+Without an ID or transcript, relay chooses the most recent `.jsonl` by mtime
+in the project for the cwd. With an explicit selector and no `--cwd`, it tries
+to recover the cwd from the transcript; if none is present, it uses the current
+directory. An ID found in multiple projects requires `--transcript`. The
+source project directory name is preserved, without recalculating it for the
+destination.
 
-Se copia también el directorio hermano de subagentes. Un archivo destino más
-nuevo conserva su contenido. Los transcripts y handoffs se guardan con permisos
-600 y los directorios nuevos con 700; las copias de archivos son atómicas.
-Se rechazan enlaces simbólicos en los transcripts y sus destinos. No se copian
-credenciales, configuración, archivos del proyecto, ramas ni worktrees: ambos
-perfiles deben tener acceso al mismo cwd. `resume` muestra la ruta del handoff
-y ejecuta `claude --resume ID` allí; no lo adjunta como un prompt nuevo.
+The sibling subagent directory is copied too. A newer destination file keeps
+its contents. Transcripts and handoffs have mode 600, and new directories have
+mode 700; file copies are atomic. Symlinks in transcripts and their destinations
+are rejected. Credentials, configuration, project files, branches and worktrees
+are not copied: both profiles must have access to the same cwd. `resume` shows
+the handoff path and runs `claude --resume ID` there; it does not attach the
+handoff as a new prompt.
 
-`run` y `resume` eliminan las variables heredadas `ANTHROPIC_API_KEY`,
+`run` and `resume` remove the inherited variables `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`,
-`CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY` y `ANTHROPIC_BASE_URL` antes de
-lanzar Claude. Para pruebas o un ejecutable alternativo se puede definir
-`CLAUDE_RELAY_CLAUDE_BIN` (ruta de un binario, sin argumentos).
-También se eliminan `CLAUDECODE` y `CLAUDE_CODE_CHILD_SESSION`, para permitir el
-proceso separado que solicita el forwarder y que Claude guarde sus transcripts
-para futuros handoffs y reanudaciones.
+`CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY` and `ANTHROPIC_BASE_URL` before
+launching Claude. For tests or an alternative executable, set
+`CLAUDE_RELAY_CLAUDE_BIN` (a binary path, without arguments).
+They also remove `CLAUDECODE` and `CLAUDE_CODE_CHILD_SESSION` to allow the
+separate process requested by the forwarder and let Claude save its transcripts
+for future handoffs and resumes.
 
-## Configuración y estado
+## Configuration and state
 
-El archivo `${XDG_CONFIG_HOME:-$HOME/.config}/claude-relay/pool` contiene una línea
-`nombre<TAB>config_dir` por perfil. Admite comentarios que empiecen con `#`.
-Los nombres admiten letras ASCII, números, puntos, guiones y guiones bajos, y
-empiezan con letra o número. Las rutas no admiten tabs ni saltos de línea.
+`${XDG_CONFIG_HOME:-$HOME/.config}/claude-relay/pool` contains one
+`name<TAB>config_dir` line per profile. Comments beginning with `#` are allowed.
+Names may contain ASCII letters, numbers, dots, hyphens and underscores, and
+must start with a letter or number. Paths cannot contain tabs or newlines.
 
-En el mismo directorio, `config` es texto `clave=valor`, sin expansión de shell:
+In the same directory, `config` is `key=value` text, without shell expansion:
 
 ```ini
 warn_at=90
 handoff_at=97
 unknown_score=50
 exhausted_ttl=3600
-wrapped_statusline=printf 'mi statusline'
+wrapped_statusline=printf 'my statusline'
 ```
 
-`CLAUDE_RELAY_WARN_AT`, `CLAUDE_RELAY_HANDOFF_AT` y
-`CLAUDE_RELAY_EXHAUSTED_TTL` tienen precedencia sobre sus claves. El TTL es un
-entero positivo en segundos. Los
-porcentajes deben estar entre 0 y 100, con `warn_at <= handoff_at`. La statusline
-previa recibe exactamente el mismo JSON por stdin y su salida se concatena con
-` │ `. Su comando se ejecuta mediante Bash, como código de configuración local.
-Si falla, la statusline de relay tampoco imprime salida.
+`CLAUDE_RELAY_WARN_AT`, `CLAUDE_RELAY_HANDOFF_AT` and
+`CLAUDE_RELAY_EXHAUSTED_TTL` take precedence over their corresponding keys.
+The TTL is a positive integer in seconds. Percentages must be between 0 and
+100, with `warn_at <= handoff_at`. The previous statusline receives exactly
+the same JSON on stdin, and its output is appended with ` │ ` as the separator.
+Its command runs through Bash as local configuration code. If it fails, relay's
+statusline produces no output either.
 
-El estado está bajo `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
+State is stored under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
 
-- `usage/<perfil>.json`: última medición recibida.
-- `exhausted/<perfil>.json`: `{profile, at, until, source}`; tiempos epoch,
-  origen `manual` o `stop-failure`. Mientras `until > now`, `status --json`
-  expone `score:100`, `exhausted:true` y `exhausted_until`; no inventa ventanas.
-- `events.log`: una línea JSON por StopFailure, modo 600. Incluye hora ISO UTC,
-  perfil, session_id, claves superiores ordenadas y solo los campos presentes
-  `error`, `error_type`, `error_details`, `matcher`, `reason`, `message`.
-  El session_id y esos valores se sanean y truncan a 200 caracteres; no se
-  registran transcripts ni otros valores del payload.
-- `handoffs/<proyecto>/<fecha>-<sid8>.md`: handoffs privados.
-- `last-handoff.json`: último traspaso o traspaso pendiente.
-- `warned/`: marcas de avisos ya entregados.
-- `sessions/`: asociación persistente entre una sesión y su handoff.
+- `usage/<profile>.json`: the last measurement received.
+- `exhausted/<profile>.json`: `{profile, at, until, source}`; epoch timestamps,
+  with source `manual` or `stop-failure`. While `until > now`, `status --json`
+  exposes `score:100`, `exhausted:true` and `exhausted_until`; it does not invent
+  windows.
+- `events.log`: one JSON line per StopFailure, mode 600. Includes an ISO UTC
+  timestamp, profile, session_id, sorted top-level keys, and only the fields
+  present among `error`, `error_type`, `error_details`, `matcher`, `reason`,
+  `message`. The session_id and those values are sanitized and truncated to
+  200 characters; transcripts and other payload values are not logged.
+- `handoffs/<project>/<date>-<sid8>.md`: private handoffs.
+- `last-handoff.json`: the latest transfer or pending transfer.
+- `warned/`: marks for warnings already delivered.
+- `sessions/`: persistent associations between sessions and their handoffs.
 
-`installed-settings.json`, en el directorio de configuración, registra los
-settings modificados y las statuslines originales. Permite restaurar todas sus
-opciones y manejar statuslines diferentes por perfil. No contiene credenciales.
+`installed-settings.json`, in the configuration directory, records the modified
+settings files and original statuslines. It allows all their options to be
+restored and supports different statuslines per profile. It contains no
+credentials.
 
-## Subagente opcional
+## Optional subagent
 
-`--with-agent` instala `agents/relay.md` en `~/.claude/agents/relay.md`. Es un
-forwarder con modelo Haiku y solo herramienta Bash: pasa la tarea completa en
-una llamada a `claude-relay run --pick --exclude <actual> -- -p ...`. El hijo
-**no ve la conversación**; el encargo debe contener todo el contexto necesario.
-El uso se carga a la cuenta elegida y el wrapper informa qué perfil se usó.
+`--with-agent` installs `agents/relay.md` at `~/.claude/agents/relay.md`. It is a
+forwarder using Haiku and only the Bash tool: it passes the complete task in
+one call to `claude-relay run --pick --exclude <current> -- -p ...`. The child
+**does not see the conversation**; the task must include all necessary context.
+Usage is charged to the selected account, and the wrapper reports which
+profile was used.
 
-El modo de permisos predeterminado es `plan`; si la tarea pide escribir, usa
-`acceptEdits`. Para tareas largas solicita `run_in_background`. No asumas que
-esas corridas actualizan la cuota que ve relay.
+The default permission mode is `plan`; if the task requires writing, use
+`acceptEdits`. Request `run_in_background` for long tasks. Do not assume those
+runs update the quota data relay sees.
 
-## Diagnóstico, pruebas y desinstalación
+## Diagnostics, tests and uninstallation
 
 ```bash
 claude-relay doctor
@@ -226,62 +254,63 @@ claude-relay help handoff
 claude-relay --version
 bash tests/run.sh
 /bin/bash tests/run.sh
-# Si tienes shellcheck:
+# If you have shellcheck:
 shellcheck -x bin/claude-relay install.sh lib/*.sh tests/*.sh
 claude-relay uninstall
-# También elimina configuración, mediciones y handoffs:
+# Also remove configuration, measurements and handoffs:
 claude-relay uninstall --purge
 ```
 
-La suite crea HOME, XDG, perfiles, temporales y un `claude` falso dentro de
-`tests/.sandbox.*`, y los elimina al salir. No instala sobre tu configuración
-real, no ejecuta Claude real ni envía notificaciones reales.
+The suite creates HOME, XDG, profiles, temporary files and a fake `claude`
+inside `tests/.sandbox.*`, then removes them on exit. It does not install over
+your real configuration, run the real Claude or send real notifications.
 
-`uninstall` admite `--settings PATH` repetido; sin esa opción usa los settings
-registrados. Quita comandos que contienen `claude-relay`, restaura la statusline
-previa si relay todavía ocupa ese lugar y conserva los cambios ajenos. Borra el
-symlink propio y el agente si coincide con la plantilla instalada. Los backups
-de settings quedan junto a sus originales, incluso con `--purge`.
+`uninstall` accepts repeated `--settings PATH` options; without them, it uses
+the recorded settings files. It removes commands containing `claude-relay`,
+restores the previous statusline if relay still occupies that slot, and
+preserves unrelated changes. It removes its own symlink and the agent if the
+agent matches the installed template. Settings backups remain beside their
+originals, even with `--purge`.
 
-## Limitaciones y términos
+## Limitations and terms
 
-Observado en pruebas reales el **2026-10-12**, con **Claude Code 2.1.296**:
+Observed in live tests on **2026-10-12**, with **Claude Code 2.1.296**:
 
-- Los asientos **Team sí reciben `rate_limits`**, pero solo `five_hour`, sin
+- **Team seats do receive `rate_limits`**, but only `five_hour`, without
   `seven_day`.
-- Bajo `claude -p` la statusline **no se ejecuta**, por lo que el uso headless
-  no queda medido por relay, incluido el subagente.
-- Una cuenta que ya está en su límite nunca obtiene una respuesta exitosa y
-  no produce medición. Por eso existen las marcas de agotamiento: evitan que
-  esa cuenta aparezca como «sin dato» con puntaje 50 y vuelva a ser elegida.
-- El primer lanzamiento interactivo en una carpeta nueva muestra el prompt
-  de confianza del workspace; hay que resolverlo en la terminal.
+- With `claude -p`, the statusline **does not run**, so relay does not measure
+  headless usage, including the subagent's usage.
+- An account already at its limit never gets a successful response and
+  produces no measurement. Exhaustion marks address this: they prevent that
+  account from appearing as "no data" with a score of 50 and being selected
+  again.
+- The first interactive launch in a new folder shows the workspace trust
+  prompt; you must handle it in the terminal.
 
-Otras limitaciones:
+Other limitations:
 
-- `rate_limits` solo llega por la statusline y después de la primera respuesta.
-  Una o ambas ventanas pueden faltar; relay no inventa una medición.
-- Una entrada sin `rate_limits` no borra una medición válida previa. Revisa su
-  antigüedad: otra sesión, otra máquina o un cambio de cuenta dentro del mismo
-  directorio pueden dejarla desactualizada. No hay sondeo de cuota en red.
-- Aún no se ha confirmado si «You've hit your session limit · resets 2:10pm»
-  llega a `StopFailure`. Se instala sin matcher para observar los eventos en
-  `events.log`; si no llega, usa `exhausted` manualmente. El TTL de respaldo
-  es una estimación y puede requerir `--for` o `--until`.
-- El formato y la ubicación de los transcripts son internos de Claude Code y
-  pueden cambiar. El SPEC registra una comprobación manual de `--resume` entre
-  perfiles con Claude Code 2.1.296; esta suite usa un binario falso y no certifica
-  compatibilidad con cada versión. Comprueba una sesión de prueba al actualizar.
-- El handoff depende de que el modelo tenga tiempo y permisos para escribirlo.
-  El placeholder creado por el hook puede estar vacío si la cuota se agota
-  antes. No se garantiza un traspaso si no hay otro perfil disponible.
-- Los hooks y la statusline silencian errores y terminan con código 0. Usa
-  `doctor` y los subcomandos manuales para investigar problemas. Una statusline
-  ajena lenta puede aumentar el tiempo de ejecución del wrapper. El objetivo
-  para los caminos comunes es menos de 100 ms; no es un límite garantizado.
-  La suite informa tiempos orientativos, que dependen de la máquina y su carga.
+- `rate_limits` arrives only through the statusline, after the first response.
+  Either or both windows may be missing; relay does not invent measurements.
+- Input without `rate_limits` does not erase a previous valid measurement.
+  Check its age: another session, another machine or an account switch within
+  the same directory can leave it stale. There is no network quota polling.
+- It is still unconfirmed whether "You've hit your session limit · resets
+  2:10pm" reaches `StopFailure`. Relay installs it without a matcher to observe
+  events in `events.log`; if the error does not arrive, use `exhausted` manually.
+  The fallback TTL is an estimate and may require `--for` or `--until`.
+- Transcript formats and locations are internal to Claude Code and may change.
+  The SPEC records a manual check of cross-profile `--resume` with Claude Code
+  2.1.296; this suite uses a fake binary and does not certify compatibility
+  with every version. Check a test session when upgrading.
+- The handoff depends on the model having time and permission to write it.
+  The placeholder created by the hook may be empty if the quota runs out
+  first. A transfer is not guaranteed if no other profile is available.
+- Hooks and the statusline suppress errors and exit with code 0. Use `doctor`
+  and the manual subcommands to investigate problems. A slow external
+  statusline can increase the wrapper's execution time. The target for common
+  paths is under 100 ms; this is not a guaranteed limit. The suite reports
+  indicative timings, which depend on the machine and its load.
 
-Los términos de Anthropic indican que los límites de los planes asumen
-«ordinary, individual usage». Cada usuario es responsable de utilizar la
-herramienta y sus cuentas dentro de los términos aplicables. Esta nota no es
-asesoramiento legal.
+Anthropic's terms state that plan limits assume "ordinary, individual usage".
+Each user is responsible for using the tool and their accounts within the
+applicable terms. This note is not legal advice.

@@ -22,7 +22,7 @@ case "${1:-help}" in
 esac
 # shellcheck source=lib/common.sh
 source "$RELAY_ROOT/lib/common.sh"
-command -v jq >/dev/null 2>&1 || { printf 'Falta jq >= 1.6.\n' >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { printf 'Missing jq >= 1.6.\n' >&2; exit 1; }
 init_config
 COMMAND=${1:-help}
 [ "$#" -eq 0 ] || shift
@@ -33,5 +33,5 @@ case "$COMMAND" in
   handoff|resume) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/handoff.sh"; "cmd_$COMMAND" "$@" ;;
   statusline|hook) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/handoff.sh"; source "$RELAY_ROOT/lib/hooks.sh"; "cmd_$COMMAND" "$@" ;;
   install|uninstall|doctor) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/install.sh"; "cmd_$COMMAND" "$@" ;;
-  *) die "Subcomando desconocido: $COMMAND. Usa claude-relay help." ;;
+  *) die "Unknown subcommand: $COMMAND. Use claude-relay help." ;;
 esac
