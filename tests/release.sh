@@ -70,7 +70,7 @@ check json_is "$FAKE_LOG" '.depth=="unset" and .args==["--resume","session-one"]
 check test ! -e "$SANDBOX/SHOULD_NOT_EXIST"
 check test ! -e "$SANDBOX/ALSO_NOT"
 # Exercise the deterministic forwarder with a hostile task as literal data.
-printf '%s\n' '#!/usr/bin/env bash' 'cp "$SANDBOX/prompt" "$TMPDIR/claude-relay-task.test"' 'chmod 600 "$TMPDIR/claude-relay-task.test" && claude-relay forward --task-file "$TMPDIR/claude-relay-task.test"' > "$SANDBOX/forwarder.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'task=$(claude-relay task-path)' 'printf "%s\n" "$task" > "$SANDBOX/forward-path"' 'cp "$SANDBOX/prompt" "$task"' 'claude-relay forward --task-file "$task"' > "$SANDBOX/forwarder.sh"
 export SANDBOX
 ln -s "$CLI" "$SANDBOX/fake/claude-relay"
 (cd "$SANDBOX" && "$BASH" "$SANDBOX/forwarder.sh") > "$SANDBOX/out" 2> "$SANDBOX/err"
@@ -78,15 +78,20 @@ check cmp -s "$SANDBOX/prompt" "$FAKE_STDIN"
 check json_is "$FAKE_LOG" '.depth=="1" and .args==["-p","--output-format","text","--permission-mode","plan"]'
 check test ! -e "$SANDBOX/SHOULD_NOT_EXIST"
 check test ! -e "$SANDBOX/ALSO_NOT"
-check equals "$(find "$TMPDIR" -name 'claude-relay-task.*' | wc -l | tr -d ' ')" 0
+check equals "$(find "$STATE/tasks" -name 'task-*.txt' | wc -l | tr -d ' ')" 0
 cp "$FAKE_LOG" "$SANDBOX/no-launch"
 rc=0; CLAUDE_RELAY_DEPTH=0 "$BASH" "$SANDBOX/forwarder.sh" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
 check test "$rc" -ne 0
 check cmp -s "$FAKE_LOG" "$SANDBOX/no-launch"
+REFUSED_TASK=$(cat "$SANDBOX/forward-path")
+check cmp -s "$SANDBOX/prompt" "$REFUSED_TASK"
 printf '\nexit 7\n' >> "$CLAUDE_RELAY_CLAUDE_BIN"
 rc=0; (cd "$SANDBOX" && "$BASH" "$SANDBOX/forwarder.sh") > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
 check equals "$rc" 7
-check equals "$(find "$TMPDIR" -name 'claude-relay-task.*' | wc -l | tr -d ' ')" 0
+check test ! -e "$(cat "$SANDBOX/forward-path")"
+check equals "$(find "$STATE/tasks" -name 'task-*.txt' | wc -l | tr -d ' ')" 1
+check cmp -s "$SANDBOX/prompt" "$REFUSED_TASK"
+rm "$REFUSED_TASK"
 rm "$SANDBOX/fake/claude-relay"
 cp "$SANDBOX/fake-original" "$CLAUDE_RELAY_CLAUDE_BIN"
 # Multiple JSON documents must never become a wrapper command.
@@ -121,6 +126,7 @@ mv "$STATE/usage/a-kept" "$STATE/usage/a"
 mkdir -p "$SANDBOX/unrelated-state"
 jq -n '{captured_at:1}' > "$SANDBOX/unrelated-state/old.json"
 ln -s "$SANDBOX/unrelated-state" "$STATE/usage/sibling-link"
+rm -f "$STATE/prune.json"
 capture_input prune-safe model-a 2 | relay statusline > "$SANDBOX/out"
 check test -f "$SANDBOX/unrelated-state/old.json"
 rm "$STATE/usage/sibling-link"
@@ -255,7 +261,7 @@ for max in -1 1.5 invalid 99999999999999999999999; do
   rc=0; CLAUDE_RELAY_MAX_DEPTH="$max" relay run --profile default -- < /dev/null > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
   check test "$rc" -ne 0
 done
-rc=0; CLAUDE_RELAY_MAX_DEPTH=0 relay run --profile default -- < /dev/null > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
+rc=0; CLAUDE_RELAY_MAX_DEPTH=0 relay run --profile default -- -p < /dev/null > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
 check test "$rc" -ne 0
 export HOME=$saved_home XDG_CONFIG_HOME=$saved_config XDG_STATE_HOME=$saved_state CLAUDE_PROFILES_ROOT=$saved_profiles CLAUDE_CONFIG_DIR=$saved_current
 # Current captures without a weekly window do not borrow an idle weekly value.

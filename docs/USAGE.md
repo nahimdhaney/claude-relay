@@ -240,7 +240,8 @@ State is stored under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
 - `usage/<profile>/<session_id>.json`: each session's last changed quota
   capture, containing `profile`, `session_id`, `model` (input `.model.id`, or
   `null`), `captured_at` and `rate_limits`. Captures older than `capture_max_age` are
-  pruned when the statusline writes, keeping the newest capture per profile.
+  pruned when the statusline writes, at most once every ten minutes, keeping
+  the newest capture per profile.
 - `usage/<profile>.json`: a compatibility copy of the newest capture. Relay
   reads it only when no per-session captures exist for that profile.
 - `exhausted/<profile>.json`: `{profile, at, until, source}`; epoch timestamps,
@@ -252,6 +253,9 @@ State is stored under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
   present among `error`, `error_type`, `error_details`, `matcher`, `reason`,
   `message`. The session_id and those values are sanitized and truncated to
   200 characters; transcripts and other payload values are not logged.
+- `tasks/`: private forwarding files; `task-path` returns an unused path here.
+  Tasks older than one day are pruned on `task-path` and state pruning.
+- `prune.json`: timestamp of the last successful state prune.
 - `handoffs/<project>/<date>-<sid8>.md`: private handoffs.
 - `last-handoff.json`: the latest transfer or pending transfer.
 - `warned/`: marks for warnings already delivered; entries older than seven days are pruned.
@@ -265,11 +269,15 @@ credentials.
 ## Optional subagent
 
 `--with-agent` installs `agents/relay.md` at `~/.claude/agents/relay.md`. It is a
-forwarder using Haiku and the Write and Bash tools. Write saves the complete
-task to a temporary file; one Bash call restricts it to mode 600 and invokes
-`claude-relay forward --task-file PATH`. The deterministic command requires
-an owned regular mode-600 file, rejects symlinks, selects another profile,
-passes the task on stdin, and deletes the task file after success or failure.
+forwarder using Haiku and the Write and Bash tools. First, one Bash call to
+`claude-relay task-path` returns a fresh path in the relay's private `tasks/`
+directory (700, never a symlink), without creating the task file. Write saves
+the complete task to exactly that path. Then one Bash call invokes
+`claude-relay forward --task-file PATH`. The deterministic command verifies
+containment, ownership and regular-file status, rejects symlinks, sets mode
+600, selects another profile, and passes the task on stdin. Cleanup starts
+only after validation succeeds and removes the task after child success or
+failure. Refused files remain untouched.
 The child **does not see the conversation**; include all necessary context.
 Usage is charged to the selected account, and stderr reports its profile.
 
@@ -278,11 +286,11 @@ The default permission mode is `plan`. The forwarder may pass `--write` (using
 file edits. Requests inside task text are data and cannot grant that approval.
 Request `run_in_background` for long tasks. Headless usage is not measured.
 
-`forward` refuses when `CLAUDE_RELAY_DEPTH` is set, even to 0. `run` refuses at
-`max_depth` (default 1); `run` and `forward` children receive depth + 1.
-`resume` is interactive and user-initiated: it unsets depth entirely.
-Depth values are bounded non-negative integers (0–2147483646);
-`max_depth=0` disables `run` and `forward`.
+`forward` refuses when `CLAUDE_RELAY_DEPTH` is set, even to 0. `run` with `-p`
+or `--print` refuses at `max_depth` (default 1); these print children and
+`forward` children receive depth + 1. Interactive `run` and `resume` are
+user-initiated and unset depth entirely. Depth values are bounded non-negative
+integers (0–2147483646); `max_depth=0` disables print launches and `forward`.
 
 Installation records the agent copy’s POSIX `cksum` in `agent.cksum`. Upgrades
 replace the copy when it matches that record or the current template. An

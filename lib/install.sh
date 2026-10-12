@@ -5,8 +5,13 @@ redact_command_filter='def redacted:
   (if contains("=") then split("=")[0]+"=…" else . end) +
   " …(\($c|length) chars, preserved)";'
 preview_settings() {
-  jq "$redact_command_filter"'if (.statusLine.command?|type)=="string" then
-    .statusLine.command |= redacted else . end'
+  jq -L "$RELAY_ROOT/lib" --argjson commands "${1:-null}" 'include "settings"; '"$redact_command_filter"'
+    if (.statusLine.command?|type)=="string" then .statusLine.command |= redacted else . end |
+    if (.hooks?|type)=="object" then
+      .hooks |= with_entries(.value |= map(.hooks |= map(
+        if (.command?|type)=="string" and (is_relay($commands)|not)
+        then .command |= redacted else . end)))
+    else . end'
 }
 backup_file() {
   local file=$1 backup
@@ -198,7 +203,8 @@ cmd_install() {
     i=0
     while [ "$i" -lt "$settings_count" ]; do
       printf '\nSettings: %s\n' "${settings[$i]}"
-      diff -U 0 <(printf '%s\n' "${originals[$i]}" | preview_settings) <(printf '%s\n' "${updates[$i]}" | preview_settings) || [ "$?" -eq 1 ]
+      identities=$(printf '%s' "$receipts" | jq -c --arg f "${settings[$i]}" '.[$f].commands')
+      diff -U 0 <(printf '%s\n' "${originals[$i]}" | preview_settings "$identities") <(printf '%s\n' "${updates[$i]}" | preview_settings "$identities") || [ "$?" -eq 1 ]
       i=$((i+1))
     done
     printf '\nSymlink: %s -> %s\n' "$link" "$RELAY_BIN"

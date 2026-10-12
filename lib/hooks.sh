@@ -56,6 +56,9 @@ store_capture() (
 # Batch capture metadata; corrupt files fall back independently.
 prune_state() (
   local dir file data files=() count cutoff
+  # store_capture holds the lock; a stamp avoids scanning on every render.
+  if [ -f "$STATE_DIR/prune.json" ] && [ ! -L "$STATE_DIR/prune.json" ] &&
+    jq -e '(.at|type)=="number" and .at<=now and .at>now-600' "$STATE_DIR/prune.json" >/dev/null 2>&1; then return 0; fi
   for dir in "$STATE_DIR/usage/"*; do
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
     files=(); count=0
@@ -80,6 +83,8 @@ prune_state() (
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
     while IFS= read -r -d '' file; do rm -f "$file"; done < <(find "$dir" -type f ! -newer "$cutoff" -print0)
   done
+  prune_task_files
+  jq -n '{at:now}' | atomic_json "$STATE_DIR/prune.json"
 )
 cmd_statusline() {
   load_pool
@@ -179,7 +184,14 @@ hook_guard() {
   else
     cwd=$(printf '%s' "$input" | jq -r .cwd)
     transcript=$(printf '%s' "$input" | jq -r .transcript_path)
-    session_source "$(profile_dir "$CURRENT_PROFILE")" "$sid" "$transcript" "$cwd"
+    session_source "$(profile_dir "$CURRENT_PROFILE")" "$sid" "$transcript" "$cwd" true
+    if $SOURCE_MISSING; then
+      # Do not cache this fallback: once the transcript exists, deliver the
+      # full handoff instruction and record instead of suppressing it.
+      context="Profile $CURRENT_PROFILE quota usage is at $score %. Stop starting new work. The session transcript is not available yet. Summarize progress and next steps for the user now."
+      jq -n --arg e "$event" --arg c "$context" '{hookSpecificOutput:{hookEventName:$e,additionalContext:$c}}'
+      return 0
+    fi
     transcript=$SOURCE_TRANSCRIPT
     project=$(project_name "$PROJECT")
     stamp=$(now_stamp)

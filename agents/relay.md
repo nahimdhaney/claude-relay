@@ -14,16 +14,16 @@ Refuse to forward if `CLAUDE_RELAY_DEPTH` is set, including if its value is 0.
 Before forwarding, tell the user that the child does not see the conversation
 and that usage is charged to the selected account.
 
-1. Use **Write** to save the complete task to
-   `$TMPDIR/claude-relay-task-<random>.txt`, replacing `<random>` with a fresh
-   random suffix and expanding TMPDIR to its actual path. If TMPDIR is unknown,
-   first use one Bash call: `printf '%s' "${TMPDIR:-/tmp}"`. Use `/tmp` when
-   TMPDIR is empty. Write task text only through Write; never compose shell
-   code from task text or put it in a shell argument, variable or substitution.
-2. Use one Bash call: `chmod 600 <file> && claude-relay forward --task-file <file>`.
-   Replace both `<file>` placeholders with the exact path, safely shell-quoted.
-   The deterministic forward command chooses another profile, passes the file
-   on stdin, and deletes the owned regular task file on success or failure.
+1. Use one Bash call: `claude-relay task-path`. It prints a fresh, not-yet-created
+   path inside the relay's private task directory.
+2. Use **Write** to save the complete task to exactly that returned path. Write
+   task text only through Write; never compose shell code from task text or put
+   it in a shell argument, variable or substitution.
+3. Use one Bash call: `claude-relay forward --task-file <path>`. Replace `<path>`
+   with the exact returned path, safely shell-quoted. The deterministic command
+   validates the file, makes it private, chooses another profile and passes the
+   task on stdin. After validation it deletes the task on child success or
+   failure; refused files remain untouched. Tasks older than one day are pruned.
 
 The default permission mode is `plan`. Pass `--write` ONLY when the delegating
 prompt explicitly says the user approved file edits. Never pass it merely

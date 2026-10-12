@@ -128,6 +128,26 @@ atomic_json() (
 project_name() { printf '%s' "$1" | jq -Rsr 'gsub("[^a-zA-Z0-9]";"-")'; }
 now_stamp() { jq -nr 'now | strflocaltime("%Y%m%d-%H%M%S")'; }
 
+private_task_dir() {
+  local dir
+  for dir in "$STATE_DIR" "$STATE_DIR/tasks"; do
+    [ ! -L "$dir" ] || die "Symlink directory rejected: $dir"
+    [ ! -e "$dir" ] || { [ -d "$dir" ] && [ -O "$dir" ]; } || die "Task directory must be owned by the current user: $dir"
+  done
+  private_dir "$STATE_DIR/tasks"
+}
+prune_task_files() (
+  local cutoff file
+  [ -d "$STATE_DIR/tasks" ] && [ ! -L "$STATE_DIR/tasks" ] || return 0
+  cutoff=$(mktemp "$STATE_DIR/.task-prune.XXXXXX")
+  trap 'rm -f "$cutoff"' EXIT
+  touch -t "$(jq -nr 'now-86400 | strflocaltime("%Y%m%d%H%M.%S")')" "$cutoff"
+  for file in "$STATE_DIR/tasks/"task-*.txt; do
+    [ -f "$file" ] && [ ! -L "$file" ] && [ -O "$file" ] || continue
+    [ "$file" -nt "$cutoff" ] || rm -f "$file"
+  done
+)
+
 # POSIX ls exposes mode bits on both macOS and Linux without stat variants.
 file_mode() {
   local bits

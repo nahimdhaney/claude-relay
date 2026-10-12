@@ -29,6 +29,7 @@ COMMAND=${1:-help}
 case "$COMMAND" in
   --version) printf 'claude-relay %s\n' "$(cat "$RELAY_ROOT/VERSION")" ;;
   help|--help|-h) source "$RELAY_ROOT/lib/help.sh"; relay_help "$@" ;;
+  task-path) source "$RELAY_ROOT/lib/profiles.sh"; cmd_task_path "$@" ;;
   detect|status|pick|run|forward|exhausted) source "$RELAY_ROOT/lib/profiles.sh"; "cmd_$COMMAND" "$@" ;;
   handoff|resume) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/handoff.sh"; "cmd_$COMMAND" "$@" ;;
   statusline|hook) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/handoff.sh"; source "$RELAY_ROOT/lib/hooks.sh"; "cmd_$COMMAND" "$@" ;;

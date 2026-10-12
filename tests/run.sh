@@ -305,6 +305,7 @@ source "$ROOT/tests/captures-and-migration.sh"
 # shellcheck source=tests/release.sh
 source "$ROOT/tests/release.sh"
 source "$ROOT/tests/security-hardening.sh"
+source "$ROOT/tests/forward-and-preview.sh"
 # Report timings for the common, non-warning path without imposing a flaky CI limit.
 usage a 20
 for operation in statusline guard; do

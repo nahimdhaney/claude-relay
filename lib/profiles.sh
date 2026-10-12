@@ -191,9 +191,7 @@ launch_claude() {
   exec "${CLAUDE_RELAY_CLAUDE_BIN:-claude}" "$@"
 }
 cmd_run() {
-  local profile='' mode='' excludes=() count=0 separator=false
-  valid_depth "${CLAUDE_RELAY_DEPTH:-0}" || die 'Invalid CLAUDE_RELAY_DEPTH.'
-  [ "${CLAUDE_RELAY_DEPTH:-0}" -lt "$MAX_DEPTH" ] || die "Recursion refused: CLAUDE_RELAY_DEPTH reached max_depth=$MAX_DEPTH."
+  local profile='' mode='' excludes=() count=0 separator=false launch_mode=interactive arg
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --profile) need_value "$@"; [ -z "$mode" ] || die '--profile and --pick are mutually exclusive.'; mode=profile; profile=$2; shift 2 ;;
@@ -203,6 +201,13 @@ cmd_run() {
     esac
   done
   $separator || die 'Usage: run [--profile P | --pick] [--exclude P] -- <args>'
+  for arg in "$@"; do
+    case "$arg" in --) break ;; -p|--print|--print=*) launch_mode=child ;; esac
+  done
+  if [ "$launch_mode" = child ]; then
+    valid_depth "${CLAUDE_RELAY_DEPTH:-0}" || die 'Invalid CLAUDE_RELAY_DEPTH.'
+    [ "${CLAUDE_RELAY_DEPTH:-0}" -lt "$MAX_DEPTH" ] || die "Recursion refused: CLAUDE_RELAY_DEPTH reached max_depth=$MAX_DEPTH."
+  fi
   load_pool
   if [ "$mode" = pick ]; then choose_profile ${excludes[@]+"${excludes[@]}"}; profile=$PICKED; fi
   profile=${profile:-$CURRENT_PROFILE}
@@ -210,11 +215,24 @@ cmd_run() {
   local excluded
   for excluded in ${excludes[@]+"${excludes[@]}"}; do [ "$profile" != "$excluded" ] || die "Excluded profile: $profile"; done
   printf 'claude-relay: profile %s\n' "$profile" >&2
-  launch_claude "$profile" child "$@"
+  launch_claude "$profile" "$launch_mode" "$@"
+}
+
+cmd_task_path() {
+  [ "$#" -eq 0 ] || die 'Usage: task-path'
+  private_task_dir
+  prune_task_files
+  local task
+  # Never pre-create the task: Write creates it inside the private directory.
+  while :; do
+    task="$STATE_DIR/tasks/task-$RANDOM$RANDOM$RANDOM$RANDOM.txt"
+    [ -e "$task" ] || [ -L "$task" ] || break
+  done
+  printf '%s\n' "$task"
 }
 
 cmd_forward() (
-  local task='' mode=plan cleanup
+  local task='' mode=plan cleanup tasks parent
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --task-file) need_value "$@"; [ -z "$task" ] || die 'Only one task file is allowed.'; task=$(absolute_path "$2"); shift 2 ;;
@@ -223,18 +241,26 @@ cmd_forward() (
     esac
   done
   [ -n "$task" ] || die 'Usage: forward --task-file PATH [--write]'
+  init_config
+  [ ! -L "$STATE_DIR" ] && [ ! -L "$STATE_DIR/tasks" ] || die 'Symlink task directory rejected.'
+  tasks=$(resolve_dir "$STATE_DIR/tasks") || die 'Task directory does not exist; use task-path.'
+  parent=$(resolve_dir "${task%/*}") || die 'Task directory does not exist.'
+  [ "$parent" = "$tasks" ] || die 'Task must be inside the relay tasks directory.'
+  task="$parent/${task##*/}"
   # Never remove an untrusted directory or another user's file.
   [ ! -L "$task" ] && [ -f "$task" ] && [ -O "$task" ] || die 'Task must be an owned regular file, not a symlink.'
-  printf -v cleanup 'rm -f %q' "$task"
-  trap "$cleanup" EXIT
-  trap 'exit 1' HUP INT TERM
-  [ "$(file_mode "$task")" = 600 ] || die 'Task file must have mode 600.'
-  init_config
   [ "${CLAUDE_RELAY_DEPTH+x}" != x ] || die 'Recursion refused: CLAUDE_RELAY_DEPTH is set.'
   [ "$MAX_DEPTH" -gt 0 ] || die 'Forwarding disabled by max_depth=0.'
   load_pool
   [ -n "$CURRENT_PROFILE" ] || die 'Cannot identify the current profile in the pool.'
   choose_profile "$CURRENT_PROFILE"
+  private_task_dir
+  chmod 600 "$task"
+  [ "$(file_mode "$task")" = 600 ] || die 'Task file must have mode 600.'
+  # Cleanup begins only after all validation succeeds. Refusals retain input.
+  printf -v cleanup 'rm -f %q' "$task"
+  trap "$cleanup" EXIT
+  trap 'exit 1' HUP INT TERM
   printf 'claude-relay: profile %s\n' "$PICKED" >&2
   # The parent retains its cleanup trap while the child execs Claude.
   (launch_claude "$PICKED" child -p --output-format text --permission-mode "$mode") < "$task"

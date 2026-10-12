@@ -40,15 +40,37 @@ check_destination_dirs() {
   done
 }
 session_source() {
-  local from_dir=$1 session=$2 transcript=$3 cwd=$4 candidate project newest=''
+  local from_dir=$1 session=$2 transcript=$3 cwd=$4 allow_missing=${5:-false} candidate project newest='' projects parent missing
+  SOURCE_MISSING=false
+  projects=$(resolve_dir "$from_dir/projects" || true)
+  if [ -z "$projects" ]; then
+    $allow_missing && [ ! -e "$from_dir/projects" ] && [ ! -L "$from_dir/projects" ] || die 'Source projects directory does not exist.'
+    projects="$from_dir/projects"
+  fi
   if [ -n "$transcript" ]; then
     transcript=$(absolute_path "$transcript")
     [ ! -L "$transcript" ] || die 'Symlink transcript rejected.'
-    transcript="$(resolve_dir "$(dirname "$transcript")")/$(basename "$transcript")"
-    case "$transcript" in "$from_dir"/projects/*/*.jsonl) ;; *) die 'The transcript does not belong to the source profile.' ;; esac
-    project=${transcript#"$from_dir/projects/"}
+    case "$transcript" in "$from_dir/projects/"*) transcript="$projects/${transcript#"$from_dir/projects/"}" ;; esac
+    parent=$(resolve_dir "${transcript%/*}" || true)
+    if [ -z "$parent" ]; then
+      $allow_missing || die 'Source project does not exist.'
+      parent=${transcript%/*} missing=''
+      # Resolve aliases in the nearest existing ancestor even when Claude
+      # has not yet created the projects tree. Reject dangling links and ..
+      # in the missing portion instead of treating them as trusted paths.
+      while [ ! -d "$parent" ]; do
+        [ ! -e "$parent" ] && [ ! -L "$parent" ] || die 'Invalid source project directory.'
+        case "${parent##*/}" in ''|.|..) die 'Invalid source project directory.' ;; esac
+        missing="/${parent##*/}$missing"
+        parent=${parent%/*}; [ -n "$parent" ] || parent=/
+      done
+      parent="$(resolve_dir "$parent")$missing"
+    fi
+    transcript="$parent/${transcript##*/}"
+    case "$transcript" in "$projects"/*/*.jsonl) ;; *) die 'The transcript does not belong to the source profile.' ;; esac
+    project=${transcript#"$projects/"}
     project=${project%/*}
-    case "$project" in */*) die 'The main transcript of a session is required.' ;; esac
+    case "$project" in ''|.|..|*/*) die 'The main transcript of a session is required.' ;; esac
     candidate=${transcript##*/}; candidate=${candidate%.jsonl}
     [ -z "$session" ] || [ "$candidate" = "$session" ] || die 'Session ID and transcript do not match.'
     session=$candidate
@@ -77,9 +99,15 @@ session_source() {
     session=${transcript##*/}; session=${session%.jsonl}
   fi
   safe_name "$session" || die 'Invalid session ID.'
+  if $allow_missing && [ ! -e "$transcript" ] && [ ! -L "$transcript" ]; then
+    SOURCE_MISSING=true
+    SOURCE_TRANSCRIPT='' SESSION_ID=$session PROJECT=$project
+    return 0
+  fi
   [ -f "$transcript" ] && [ ! -L "$transcript" ] || die "Transcript does not exist: $transcript"
   # Ensure source project directories do not lead outside the selected config.
-  [ "$(resolve_dir "$(dirname "$transcript")")" = "$from_dir/projects/$project" ] || die 'Symlink project rejected.'
+  parent=$(resolve_dir "$(dirname "$transcript")")
+  [ "$parent" = "$(resolve_dir "$from_dir/projects/$project")" ] && [ "$parent" = "$projects/$project" ] || die 'Symlink project rejected.'
   SOURCE_TRANSCRIPT=$transcript SESSION_ID=$session PROJECT=$project
 }
 cmd_handoff() {

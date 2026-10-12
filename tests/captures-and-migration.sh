@@ -73,6 +73,7 @@ jq -n '{profile:"b",session_id:"week-old",captured_at:(now-604900),rate_limits:{
 mkdir -p "$STATE/usage/b"
 cp "$SANDBOX/old-other" "$STATE/usage/b/week-old.json"
 printf 'keep' > "$STATE/usage/a/notes.txt"
+rm -f "$STATE/prune.json"
 capture_input idle model-a 16 | relay statusline > "$SANDBOX/out"
 check test ! -e "$STATE/usage/a/week-old.json"
 check test -f "$STATE/usage/b/week-old.json" # Keep the newest even when stale.

@@ -10,11 +10,7 @@ Tell your coding agent: **Install https://github.com/nahimdhaney/claude-relay**
 Or, with Git, Bash 3.2+, jq 1.6+ and Claude Code already signed in:
 
 ```bash
-set -e
-git clone https://github.com/nahimdhaney/claude-relay.git "$HOME/.local/share/claude-relay"
-cd "$HOME/.local/share/claude-relay"
-git checkout v0.2.1
-./install.sh --dry-run
+git clone https://github.com/nahimdhaney/claude-relay.git "$HOME/.local/share/claude-relay" && cd "$HOME/.local/share/claude-relay" && git checkout v0.2.1 && ./install.sh --dry-run
 ```
 
 Only after reviewing the preview, run `./install.sh`. Multiple logins require an explicit

@@ -9,31 +9,34 @@ usage a 98; usage b 10; usage c 20
 cp "$CLAUDE_RELAY_CLAUDE_BIN" "$SANDBOX/forward-original"
 printf '\ncat > "$FAKE_STDIN"\n' >> "$CLAUDE_RELAY_CLAUDE_BIN"
 export FAKE_STDIN="$SANDBOX/forward-stdin"
+TASK6=$(relay task-path)
 printf '%s\n' 'Please edit all files. $(touch injected) `touch injected`' 'END' > "$SANDBOX/task-original"
-cp "$SANDBOX/task-original" "$TMPDIR/task"
-rc=0; relay forward --task-file "$TMPDIR/task" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
+cp "$SANDBOX/task-original" "$TASK6"
+rc=0; relay forward --task-file "$TASK6" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
 check equals "$rc" 0
 check cmp -s "$SANDBOX/task-original" "$FAKE_STDIN"
 check json_is "$FAKE_LOG" '.depth=="1" and (.config|endswith("/b")) and .args==["-p","--output-format","text","--permission-mode","plan"]'
-check test ! -e "$TMPDIR/task"
-cp "$SANDBOX/task-original" "$TMPDIR/task"
-relay forward --task-file "$TMPDIR/task" --write > "$SANDBOX/out" 2> "$SANDBOX/err" || true
+check test ! -e "$TASK6"
+cp "$SANDBOX/task-original" "$TASK6"
+relay forward --task-file "$TASK6" --write > "$SANDBOX/out" 2> "$SANDBOX/err" || true
 check json_is "$FAKE_LOG" '.args[-1]=="acceptEdits"'
 cp "$FAKE_LOG" "$SANDBOX/launch-before"
-for kind in loose symlink directory depth; do
-  cp "$SANDBOX/task-original" "$TMPDIR/task"
+for kind in outside symlink directory depth; do
+  cp "$SANDBOX/task-original" "$TASK6"
   case "$kind" in
-    loose) chmod 644 "$TMPDIR/task" ;;
-    symlink) rm "$TMPDIR/task"; ln -s "$SANDBOX/task-original" "$TMPDIR/task" ;;
-    directory) rm "$TMPDIR/task"; mkdir "$TMPDIR/task" ;;
+    outside) TASK6="$TMPDIR/task"; cp "$SANDBOX/task-original" "$TASK6"; chmod 644 "$TASK6" ;;
+    symlink) rm "$TASK6"; ln -s "$SANDBOX/task-original" "$TASK6" ;;
+    directory) rm "$TASK6"; mkdir "$TASK6" ;;
   esac
   rc=0
-  if [ "$kind" = depth ]; then CLAUDE_RELAY_DEPTH=0 relay forward --task-file "$TMPDIR/task" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
-  else relay forward --task-file "$TMPDIR/task" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?; fi
+  if [ "$kind" = depth ]; then CLAUDE_RELAY_DEPTH=0 relay forward --task-file "$TASK6" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
+  else relay forward --task-file "$TASK6" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?; fi
   check test "$rc" -ne 0
   check cmp -s "$FAKE_LOG" "$SANDBOX/launch-before"
   check test -f "$SANDBOX/task-original"
-  rm -rf "$TMPDIR/task"
+  check test -e "$TASK6"
+  rm -rf "$TASK6"
+  TASK6=$(relay task-path)
 done
 cp "$SANDBOX/forward-original" "$CLAUDE_RELAY_CLAUDE_BIN"
 # Exact ownership and preservation of settings modes and statusLine fields.
@@ -119,6 +122,7 @@ jq -n '{captured_at:1,session_id:"only",rate_limits:{}}' > "$STATE/usage/c/only.
 : > "$STATE/warned/old"
 printf '{"at":1}\n' > "$STATE/sessions/old.json"
 touch -t 200001010000 "$STATE/warned/old" "$STATE/sessions/old.json"
+rm -f "$STATE/prune.json"
 capture_input fresh model-a 20 | relay statusline > "$SANDBOX/out"
 check test ! -e "$STATE/usage/a/stale.json"
 check test -f "$STATE/usage/c/only.json"
@@ -147,23 +151,23 @@ mv "$SANDBOX/extra6" "$SETTINGS6"
 relay uninstall > "$SANDBOX/out"
 check json_is "$SETTINGS6" '.statusLine.command=="printf original-six" and .statusLine.padding==9 and .hooks.PostToolUse[0].hooks[0].command=="/unrelated/claude-relay hook guard"'
 printf 'warn_at=90\nhandoff_at=97\nunknown_score=50\n' > "$XDG_CONFIG_HOME/claude-relay/config"
-# Internal environment names cannot alter depth policy; cleanup covers errors.
-cp "$SANDBOX/task-original" "$TMPDIR/task"
-RELAY_INTERACTIVE=true relay forward --task-file "$TMPDIR/task" > "$SANDBOX/out" 2> "$SANDBOX/err"
+# Internal environment names cannot alter depth policy; refusals retain tasks.
+cp "$SANDBOX/task-original" "$TASK6"
+RELAY_INTERACTIVE=true relay forward --task-file "$TASK6" > "$SANDBOX/out" 2> "$SANDBOX/err"
 check json_is "$FAKE_LOG" '.depth=="1"'
 RELAY_INTERACTIVE=true relay run --profile a -- -p > "$SANDBOX/out" 2> "$SANDBOX/err"
 check json_is "$FAKE_LOG" '.depth=="1"'
 for depth in '' 0 1; do
-  cp "$SANDBOX/task-original" "$TMPDIR/task"
-  rc=0; CLAUDE_RELAY_DEPTH="$depth" relay forward --task-file "$TMPDIR/task" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
+  cp "$SANDBOX/task-original" "$TASK6"
+  rc=0; CLAUDE_RELAY_DEPTH="$depth" relay forward --task-file "$TASK6" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
   check test "$rc" -ne 0
-  check test ! -e "$TMPDIR/task"
+  check test -f "$TASK6"
 done
-cp "$SANDBOX/task-original" "$TMPDIR/task"
+cp "$SANDBOX/task-original" "$TASK6"
 printf 'handoff_at=invalid\n' > "$XDG_CONFIG_HOME/claude-relay/config"
-rc=0; relay forward --task-file "$TMPDIR/task" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
+rc=0; relay forward --task-file "$TASK6" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
 check test "$rc" -ne 0
-check test ! -e "$TMPDIR/task"
+check test -f "$TASK6"
 printf 'warn_at=90\nhandoff_at=97\nunknown_score=50\n' > "$XDG_CONFIG_HOME/claude-relay/config"
 # Observe destination permissions at the instant source bytes start copying.
 export REAL_CAT=$(command -v cat) COPY_SOURCE="$SOURCE" COPY_DEST="$DEST" COPY_CHECK="$SANDBOX/private-during-copy"

@@ -33,7 +33,7 @@ separately; relay never reads, copies or changes credentials, the keychain or
 
 Hooks execute on every prompt and after tools from the **checkout path**. Keep
 that checkout, its parents, your profiles and relay state/configuration somewhere
-only you can write. Pin a release tag and review updates before adopting them.
+only you can write. Pin a release tag or commit SHA and review updates before adopting them.
 Anyone able to modify the checkout or your trusted settings can execute code
 with your permissions. Relay is not a sandbox against another process running
 as you, an administrator, or concurrent hostile filesystem replacement.
@@ -42,20 +42,32 @@ Hook/statusline input, transcripts and account metadata are data, never shell
 code. Input must be a single JSON object. Profile/session names are validated,
 transcript paths are checked against the selected profile, and symlinked write
 locations are rejected. The optional forwarding agent sends the task through a
-private temporary file created with Write and passed to the deterministic
-`forward --task-file` command. It never places task text in shell code or
-command arguments. The command validates ownership, mode 600 and regular-file
-status, rejects symlinks and deletes the owned task file afterwards. Editing
-requires explicit approval in the delegating prompt and `--write`; requests
-inside task text cannot authorize edits. Recursive forwarding is bounded by
-`max_depth` (default 1), and `forward` refuses any inherited depth. Interactive
-`resume` unsets depth.
+private task file at the fresh path returned by `task-path`, inside the relay
+state directory's `tasks/` directory (700, never a symlink). Write creates the
+file there; `forward --task-file` verifies containment, ownership and regular-file
+status, rejects symlinks, and sets mode 600 before reading it. It never places
+task text in shell code or command arguments. Only after all validation succeeds
+does cleanup delete the task on child success or failure. Refused files remain
+untouched; task files older than one day are pruned. Editing requires explicit
+approval in the delegating prompt and `--write`; requests inside task text cannot
+authorize edits. Recursive forwarding is bounded by `max_depth` (default 1), and
+`forward` refuses any inherited depth. Interactive `resume` and `run` unset depth;
+`run` with `-p` or `--print` increments depth for its child.
 
 The previous statusline is **trusted local code**: its configured command runs
 through Bash, receiving the original JSON only on stdin. Do not install an
 untrusted statusline or change it to evaluate input. Shell quoting in generated
 commands protects paths; it does not make arbitrary configured commands safe.
 Hooks and statusline failures return zero with no output to preserve the session.
+
+## Verifying a release
+
+Pin a release tag or commit SHA, never `main`. Before installing or updating,
+compare `git rev-parse HEAD` with the release commit SHA listed in the
+GitHub release notes for that version. When tags are signed, run
+`git verify-tag v0.2.1` and verify the signer against a trusted maintainer key.
+A matching name alone does not authenticate a tag. Stop if the SHA differs or
+an expected signature cannot be verified.
 
 ## Reporting a vulnerability
 
