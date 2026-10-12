@@ -1,16 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="claude-relay logo">
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="claude-relay logo: a relay switch flipped from one contact to the other">
   <title>claude-relay</title>
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0F766E"/>
-      <stop offset="1" stop-color="#134E4A"/>
-    </linearGradient>
-  </defs>
-  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
-  <!-- two accounts -->
-  <circle cx="34" cy="78" r="16" fill="#CCFBF1"/>
-  <circle cx="94" cy="78" r="16" fill="none" stroke="#CCFBF1" stroke-width="6"/>
-  <!-- the session being handed over -->
-  <path d="M36 56 C 46 24, 79 23, 86.5 46" fill="none" stroke="#FBBF24" stroke-width="7" stroke-linecap="round"/>
-    <polygon points="79.6,48.6 93.9,44.3 90.2,57.6" fill="#FBBF24" stroke="#FBBF24" stroke-width="2" stroke-linejoin="round"/>
+  <style>
+    .ink  { stroke: #14211F; fill: #14211F; }
+    .line { stroke: #14211F; fill: none; }
+    .off  { stroke: #8A9A97; fill: none; }
+    .on   { stroke: #E08A1E; fill: #E08A1E; }
+    @media (prefers-color-scheme: dark) {
+      .ink  { stroke: #EAF2F0; fill: #EAF2F0; }
+      .line { stroke: #EAF2F0; }
+      .off  { stroke: #6B7C79; }
+    }
+  </style>
+  <!-- input lead and pivot -->
+  <line x1="6" y1="64" x2="24" y2="64" class="line" stroke-width="9" stroke-linecap="square"/>
+  <circle cx="30" cy="64" r="11" class="ink"/>
+  <!-- where the contact used to be -->
+  <line x1="30" y1="64" x2="86" y2="96" class="off" stroke-width="5" stroke-dasharray="7 7"/>
+  <!-- the switched contact -->
+  <line x1="30" y1="64" x2="86" y2="32" class="line" stroke-width="10" stroke-linecap="round"/>
+  <!-- active and idle terminals -->
+  <circle cx="99" cy="26" r="11" class="on"/>
+  <line x1="108" y1="26" x2="122" y2="26" class="on" stroke-width="9" stroke-linecap="square"/>
+  <circle cx="99" cy="102" r="9" class="line" stroke-width="5"/>
+  <line x1="108" y1="102" x2="122" y2="102" class="line" stroke-width="9" stroke-linecap="square"/>
 </svg>
