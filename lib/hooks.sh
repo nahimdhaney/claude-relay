@@ -126,7 +126,8 @@ cmd_statusline() {
   fi
   # Broken/migrated receipts must not recursively launch this statusline.
   printf -v command '%q' "$RELAY_BIN"
-  if printf '%s' "$wrapped" | jq -eR -L "$RELAY_ROOT/lib" --arg bin "$command" 'include "settings"; {command:.} | is_relay(relay_commands($bin)) or is_relay' >/dev/null; then return 1; fi
+  # jq 1.6 exits 0 for -e with empty input, so never test an empty command.
+  if [ -n "$wrapped" ] && printf '%s' "$wrapped" | jq -eR -L "$RELAY_ROOT/lib" --arg bin "$command" 'include "settings"; {command:.} | is_relay(relay_commands($bin)) or is_relay' >/dev/null; then return 1; fi
   [ -n "$CURRENT_PROFILE" ] || line=''
   if [ -n "$wrapped" ]; then
     wrapped=$(printf '%s' "$input" | bash -c "$wrapped")

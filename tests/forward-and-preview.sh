@@ -159,7 +159,7 @@ cp "$STATE/prune.json" "$SANDBOX/prune7-before"
 capture_input throttle7 model-a 20 | relay statusline > "$SANDBOX/out"
 check test -f "$STATE/warned/throttle7"
 check cmp -s "$STATE/prune.json" "$SANDBOX/prune7-before"
-jq -n '{at:now-601}' > "$STATE/prune.json"
+jq -n '{at:(now-601)}' > "$STATE/prune.json"
 capture_input throttle7 model-a 21 | relay statusline > "$SANDBOX/out"
 check test ! -e "$STATE/warned/throttle7"
 check json_is "$STATE/prune.json" '.at > now-60'

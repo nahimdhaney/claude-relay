@@ -115,7 +115,7 @@ started=$(jq -nr now)
 relay hook guard < "$SANDBOX/guard6" > "$SANDBOX/out"
 elapsed=$(jq -nr --argjson start "$started" '(now-$start)*1000')
 check jq -en --argjson ms "$elapsed" --argjson budget "${CLAUDE_RELAY_TEST_GUARD_MS:-300}" '$ms<$budget'
-jq -n '{captured_at:now-22000,session_id:"stale",rate_limits:{}}' > "$STATE/usage/a/stale.json"
+jq -n '{captured_at:(now-22000),session_id:"stale",rate_limits:{}}' > "$STATE/usage/a/stale.json"
 rm -rf "$STATE/usage/c"
 mkdir -p "$STATE/usage/c"
 jq -n '{captured_at:1,session_id:"only",rate_limits:{}}' > "$STATE/usage/c/only.json"
