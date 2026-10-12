@@ -10,7 +10,7 @@ def install($command):
   clean |
   .hooks.UserPromptSubmit += [{hooks:[{type:"command",command:($command+" hook guard")}]}] |
   .hooks.PostToolUse += [{hooks:[{type:"command",command:($command+" hook guard")}]}] |
-  .hooks.StopFailure += [{matcher:"rate_limit",hooks:[{type:"command",command:($command+" hook stop-failure")}]}] |
+  .hooks.StopFailure += [{hooks:[{type:"command",command:($command+" hook stop-failure")}]}] |
   .statusLine={type:"command",command:($command+" statusline"),refreshInterval:60};
 def receipt:
   {hadStatusLine:has("statusLine"),statusLine:.statusLine,hadHooks:has("hooks"),

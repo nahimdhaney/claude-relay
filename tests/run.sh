@@ -7,7 +7,7 @@ trap 'rm -rf "$SANDBOX"' EXIT
 export HOME="$SANDBOX/home" XDG_CONFIG_HOME="$SANDBOX/config" XDG_STATE_HOME="$SANDBOX/state"
 export XDG_CACHE_HOME="$SANDBOX/cache" XDG_DATA_HOME="$SANDBOX/data" XDG_RUNTIME_DIR="$SANDBOX/runtime" TMPDIR="$SANDBOX/tmp"
 export CLAUDE_PROFILES_ROOT="$SANDBOX/profiles" CLAUDE_CONFIG_DIR="$SANDBOX/profiles/a"
-unset CLAUDE_RELAY_WARN_AT CLAUDE_RELAY_HANDOFF_AT BASH_ENV ENV || true
+unset CLAUDE_RELAY_WARN_AT CLAUDE_RELAY_HANDOFF_AT CLAUDE_RELAY_EXHAUSTED_TTL BASH_ENV ENV || true
 mkdir -p "$HOME" "$XDG_CONFIG_HOME/claude-relay" "$XDG_STATE_HOME" "$TMPDIR" "$SANDBOX/fake" "$CLAUDE_PROFILES_ROOT/a" "$CLAUDE_PROFILES_ROOT/b" "$CLAUDE_PROFILES_ROOT/c" "$SANDBOX/project space"
 export PATH="$SANDBOX/fake:$PATH" CLAUDE_RELAY_CLAUDE_BIN="$SANDBOX/fake/claude" FAKE_LOG="$SANDBOX/launch.json"
 # Shebangs and child shells use the same Bash as this suite (including 3.2).
@@ -15,7 +15,7 @@ ln -s "$BASH" "$SANDBOX/fake/bash"
 cat > "$CLAUDE_RELAY_CLAUDE_BIN" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
-jq -n --arg cwd "$PWD" --arg config "$CLAUDE_CONFIG_DIR" --arg nested "${CLAUDECODE-}" --arg auth "${ANTHROPIC_API_KEY-}${ANTHROPIC_AUTH_TOKEN-}${CLAUDE_CODE_OAUTH_TOKEN-}${CLAUDE_CODE_USE_BEDROCK-}${CLAUDE_CODE_USE_VERTEX-}${CLAUDE_CODE_USE_FOUNDRY-}${ANTHROPIC_BASE_URL-}" --args '{cwd:$cwd,config:$config,nested:$nested,auth:$auth,args:$ARGS.positional}' -- "$@" > "$FAKE_LOG"
+jq -n --arg cwd "$PWD" --arg config "$CLAUDE_CONFIG_DIR" --arg nested "${CLAUDECODE-}" --arg child "${CLAUDE_CODE_CHILD_SESSION-unset}" --arg auth "${ANTHROPIC_API_KEY-}${ANTHROPIC_AUTH_TOKEN-}${CLAUDE_CODE_OAUTH_TOKEN-}${CLAUDE_CODE_USE_BEDROCK-}${CLAUDE_CODE_USE_VERTEX-}${CLAUDE_CODE_USE_FOUNDRY-}${ANTHROPIC_BASE_URL-}" --args '{cwd:$cwd,config:$config,nested:$nested,child:$child,auth:$auth,args:$ARGS.positional}' -- "$@" > "$FAKE_LOG"
 FAKE
 # Never invoke a real desktop notifier from this suite.
 for notifier in osascript notify-send; do
@@ -38,7 +38,7 @@ usage() {
   mkdir -p "$XDG_STATE_HOME/claude-relay/usage"
   jq -n --arg p "$1" --argjson n "$2" --argjson reset "${3:-4102444800}" '{profile:$p,captured_at:now,session_id:"other-session",rate_limits:{five_hour:{used_percentage:$n,resets_at:$reset}}}' > "$XDG_STATE_HOME/claude-relay/usage/$1.json"
 }
-guard_input() { jq --arg cwd "$SANDBOX/project space" --arg transcript "$SOURCE" --arg event "${1:-UserPromptSubmit}" '.cwd=$cwd | .transcript_path=$transcript | .hook_event_name=$event' "$ROOT/tests/fixtures/hook.json"; }
+guard_input() { jq --arg cwd "$SANDBOX/project space" --arg transcript "$SOURCE" --arg event "${1:-UserPromptSubmit}" '.cwd=$cwd | .transcript_path=$transcript | .hook_event_name=$event | if $event=="StopFailure" then .error="rate_limit" else . end' "$ROOT/tests/fixtures/hook.json"; }
 write_pool
 printf 'warn_at=90\nhandoff_at=97\nunknown_score=50\n' > "$XDG_CONFIG_HOME/claude-relay/config"
 check test -f "$CLI"
@@ -281,7 +281,7 @@ PATH="$SANDBOX/minimal-bin" relay uninstall > "$SANDBOX/uninstall"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/fake/claude-profile"
 chmod +x "$SANDBOX/fake/claude-profile"
 relay install --profiles a,b > "$SANDBOX/install" 2> "$SANDBOX/err"
-check json_is "$HOME/.claude/settings.json" '.hooks.StopFailure[0].matcher=="rate_limit"'
+check json_is "$HOME/.claude/settings.json" '.hooks.StopFailure[0] | has("matcher") | not'
 relay uninstall > "$SANDBOX/uninstall"
 rm "$SANDBOX/fake/claude-profile"
 # Doctor rejects an executable below the required jq version.
@@ -296,6 +296,8 @@ rm "$SANDBOX/fake/jq"
 rm "$XDG_CONFIG_HOME/claude-relay/installed-settings.json"
 relay install --profiles a,b --settings "$SETTINGS" > "$SANDBOX/install" 2> "$SANDBOX/err"
 check json_is "$XDG_CONFIG_HOME/claude-relay/installed-settings.json" 'all(.[]; (.statusLine.command // "" | contains("claude-relay")) | not)'
+# shellcheck source=tests/round2.sh
+source "$ROOT/tests/round2.sh"
 # Report timings for the common, non-warning path without imposing a flaky CI limit.
 usage a 20
 for operation in statusline guard; do

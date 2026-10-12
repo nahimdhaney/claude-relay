@@ -15,22 +15,25 @@ init_config() {
   CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-relay"
   STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay"
   POOL_FILE="$CONFIG_DIR/pool"
-  WARN_AT=90 HANDOFF_AT=97 UNKNOWN_SCORE=50 WRAPPED_STATUSLINE=
+  WARN_AT=90 HANDOFF_AT=97 UNKNOWN_SCORE=50 EXHAUSTED_TTL=3600 WRAPPED_STATUSLINE=
   local key value
   if [ -f "$CONFIG_DIR/config" ]; then
     while IFS='=' read -r key value || [ -n "$key" ]; do
       case "$key" in
         warn_at) WARN_AT=$value ;; handoff_at) HANDOFF_AT=$value ;;
         unknown_score) UNKNOWN_SCORE=$value ;; wrapped_statusline) WRAPPED_STATUSLINE=$value ;;
+        exhausted_ttl) EXHAUSTED_TTL=$value ;;
       esac
     done < "$CONFIG_DIR/config"
   fi
   WARN_AT=${CLAUDE_RELAY_WARN_AT:-$WARN_AT}
   HANDOFF_AT=${CLAUDE_RELAY_HANDOFF_AT:-$HANDOFF_AT}
-  # Guard validates thresholds in its single jq pass. Statusline needs none.
+  EXHAUSTED_TTL=${CLAUDE_RELAY_EXHAUSTED_TTL:-$EXHAUSTED_TTL}
+  # Safe workers validate the values they need when processing the event.
   if [ "${SAFE_WORKER:-false}" = true ]; then return; fi
   jq -en --arg w "$WARN_AT" --arg h "$HANDOFF_AT" --arg u "$UNKNOWN_SCORE" '
     [$w,$h,$u] | map(tonumber) | all(.>=0 and .<=100) and (.[0]<=.[1])' >/dev/null || die 'Umbrales inválidos (0–100, warn_at <= handoff_at).'
+  jq -en --arg ttl "$EXHAUSTED_TTL" '$ttl|tonumber|.>0 and .==floor' >/dev/null || die 'exhausted_ttl debe ser un entero positivo (segundos).'
 }
 load_pool() {
   POOL_NAMES=() POOL_DIRS=() POOL_COUNT=0 CURRENT_PROFILE=

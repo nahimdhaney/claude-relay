@@ -56,8 +56,9 @@ la lista indicada, en ese orden. Si no pasas `--settings`, se modifica
 fuente de sincronización); en otro caso, el `settings.json` de cada perfil.
 
 La instalación agrega grupos a `UserPromptSubmit`, `PostToolUse` y `StopFailure`
-(`rate_limit`), conserva los hooks ajenos y envuelve la statusline anterior.
-Repetir la instalación no duplica los grupos. Antes de cada escritura se crea
+(sin matcher), conserva los hooks ajenos y envuelve la statusline anterior.
+Repetir la instalación migra el antiguo matcher `rate_limit` sin duplicar
+grupos ni cambiar los matchers de hooks ajenos. Antes de cada escritura se crea
 `settings.json.relay-backup-<fecha>.<sufijo>` y el JSON nuevo se valida antes del
 reemplazo atómico. `--dry-run` muestra los cambios sin escribir archivos.
 
@@ -85,6 +86,23 @@ perfiles sin directorio o con puntaje de 97 o más y desempata por orden del poo
 Si no hay candidatos, devuelve código 3. Los perfiles explícitos permiten una
 elección manual aunque no cumplan ese filtro.
 
+Una cuenta marcada como agotada tiene puntaje 100 hasta que vence la marca;
+`status` muestra «agotada hasta HH:MM» en hora local. Puedes marcarla o liberar
+la marca manualmente:
+
+```bash
+claude-relay exhausted personal
+claude-relay exhausted personal --for 90m   # también 4h o 3600s
+claude-relay exhausted personal --until 1791828000  # epoch en segundos
+claude-relay exhausted personal --clear
+```
+
+Sin plazo explícito, se usa el último `five_hour.resets_at` conocido si sigue
+en el futuro; si no, `exhausted_ttl` (3600 segundos por defecto). `--for`,
+`--until` y `--clear` son excluyentes. Una captura nueva con cuota válida y
+puntaje menor que `handoff_at` borra la marca si `captured_at` es posterior a
+su creación. Un dato ausente, anterior o todavía alto no la borra.
+
 Al llegar a 90 %, el modelo recibe una advertencia para ir cerrando. Al llegar
 a 97 %, recibe la ruta exacta de un handoff y sus secciones: objetivo, estado,
 archivos y ramas, decisiones, próximos pasos, verificación y riesgos. El modelo
@@ -100,9 +118,13 @@ claude-relay resume --last --to trabajo
 ```
 
 El hook registra la sesión incluso antes de copiarla, por lo que `--last` puede
-hacer el traspaso pendiente. Si el turno termina por un error `rate_limit`, el
-hook `StopFailure` intenta copiarla automáticamente al mejor perfil y enviar
-una notificación de escritorio si hay un notificador disponible.
+hacer el traspaso pendiente. El hook `StopFailure` registra todos los errores
+recibidos y busca señales de límite de uso en sus campos de error. Si detecta
+un límite, marca primero la cuenta agotada e intenta copiar la sesión al mejor
+perfil. Envía una notificación de escritorio si hay un notificador disponible;
+si falta el transcript o falla el traspaso, avisa «cuenta X agotada; no se pudo
+copiar la sesión». El registro permite investigar si los errores de límite del
+plan llegan realmente a ese hook.
 
 También puedes hacerlo manualmente, desde el directorio del proyecto:
 
@@ -134,8 +156,9 @@ y ejecuta `claude --resume ID` allí; no lo adjunta como un prompt nuevo.
 `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY` y `ANTHROPIC_BASE_URL` antes de
 lanzar Claude. Para pruebas o un ejecutable alternativo se puede definir
 `CLAUDE_RELAY_CLAUDE_BIN` (ruta de un binario, sin argumentos).
-También se elimina `CLAUDECODE`, el marcador de ejecución anidada, para permitir
-el proceso separado que solicita el forwarder.
+También se eliminan `CLAUDECODE` y `CLAUDE_CODE_CHILD_SESSION`, para permitir el
+proceso separado que solicita el forwarder y que Claude guarde sus transcripts
+para futuros handoffs y reanudaciones.
 
 ## Configuración y estado
 
@@ -150,10 +173,13 @@ En el mismo directorio, `config` es texto `clave=valor`, sin expansión de shell
 warn_at=90
 handoff_at=97
 unknown_score=50
+exhausted_ttl=3600
 wrapped_statusline=printf 'mi statusline'
 ```
 
-`CLAUDE_RELAY_WARN_AT` y `CLAUDE_RELAY_HANDOFF_AT` tienen precedencia. Los
+`CLAUDE_RELAY_WARN_AT`, `CLAUDE_RELAY_HANDOFF_AT` y
+`CLAUDE_RELAY_EXHAUSTED_TTL` tienen precedencia sobre sus claves. El TTL es un
+entero positivo en segundos. Los
 porcentajes deben estar entre 0 y 100, con `warn_at <= handoff_at`. La statusline
 previa recibe exactamente el mismo JSON por stdin y su salida se concatena con
 ` │ `. Su comando se ejecuta mediante Bash, como código de configuración local.
@@ -162,6 +188,14 @@ Si falla, la statusline de relay tampoco imprime salida.
 El estado está bajo `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
 
 - `usage/<perfil>.json`: última medición recibida.
+- `exhausted/<perfil>.json`: `{profile, at, until, source}`; tiempos epoch,
+  origen `manual` o `stop-failure`. Mientras `until > now`, `status --json`
+  expone `score:100`, `exhausted:true` y `exhausted_until`; no inventa ventanas.
+- `events.log`: una línea JSON por StopFailure, modo 600. Incluye hora ISO UTC,
+  perfil, session_id, claves superiores ordenadas y solo los campos presentes
+  `error`, `error_type`, `error_details`, `matcher`, `reason`, `message`.
+  El session_id y esos valores se sanean y truncan a 200 caracteres; no se
+  registran transcripts ni otros valores del payload.
 - `handoffs/<proyecto>/<fecha>-<sid8>.md`: handoffs privados.
 - `last-handoff.json`: último traspaso o traspaso pendiente.
 - `warned/`: marcas de avisos ya entregados.
@@ -191,8 +225,9 @@ claude-relay help
 claude-relay help handoff
 claude-relay --version
 bash tests/run.sh
+/bin/bash tests/run.sh
 # Si tienes shellcheck:
-shellcheck -x bin/claude-relay install.sh lib/*.sh tests/run.sh
+shellcheck -x bin/claude-relay install.sh lib/*.sh tests/*.sh
 claude-relay uninstall
 # También elimina configuración, mediciones y handoffs:
 claude-relay uninstall --purge
@@ -210,14 +245,29 @@ de settings quedan junto a sus originales, incluso con `--purge`.
 
 ## Limitaciones y términos
 
+Observado en pruebas reales el **2026-10-12**, con **Claude Code 2.1.296**:
+
+- Los asientos **Team sí reciben `rate_limits`**, pero solo `five_hour`, sin
+  `seven_day`.
+- Bajo `claude -p` la statusline **no se ejecuta**, por lo que el uso headless
+  no queda medido por relay, incluido el subagente.
+- Una cuenta que ya está en su límite nunca obtiene una respuesta exitosa y
+  no produce medición. Por eso existen las marcas de agotamiento: evitan que
+  esa cuenta aparezca como «sin dato» con puntaje 50 y vuelva a ser elegida.
+- El primer lanzamiento interactivo en una carpeta nueva muestra el prompt
+  de confianza del workspace; hay que resolverlo en la terminal.
+
+Otras limitaciones:
+
 - `rate_limits` solo llega por la statusline y después de la primera respuesta.
-  Una o ambas ventanas pueden faltar. En asientos **Team** puede no estar
-  disponible: esos perfiles quedan «sin dato»; relay no inventa una medición.
+  Una o ambas ventanas pueden faltar; relay no inventa una medición.
 - Una entrada sin `rate_limits` no borra una medición válida previa. Revisa su
   antigüedad: otra sesión, otra máquina o un cambio de cuenta dentro del mismo
   directorio pueden dejarla desactualizada. No hay sondeo de cuota en red.
-- `claude -p` no expone la cuota del plan y puede no ejecutar la statusline.
-  Su consumo puede **no quedar medido**, también al usar el subagente.
+- Aún no se ha confirmado si «You've hit your session limit · resets 2:10pm»
+  llega a `StopFailure`. Se instala sin matcher para observar los eventos en
+  `events.log`; si no llega, usa `exhausted` manualmente. El TTL de respaldo
+  es una estimación y puede requerir `--for` o `--until`.
 - El formato y la ubicación de los transcripts son internos de Claude Code y
   pueden cambiar. El SPEC registra una comprobación manual de `--resume` entre
   perfiles con Claude Code 2.1.296; esta suite usa un binario falso y no certifica

@@ -117,11 +117,11 @@ cmd_install() {
   # Keep unknown config keys and never source/eval this file.
   if [ -f "$CONFIG_DIR/config" ]; then
     while IFS= read -r entry || [ -n "$entry" ]; do
-      case "$entry" in warn_at=*|handoff_at=*|unknown_score=*|wrapped_statusline=*) ;; *) config="$config$entry"$'\n' ;; esac
+      case "$entry" in warn_at=*|handoff_at=*|unknown_score=*|exhausted_ttl=*|wrapped_statusline=*) ;; *) config="$config$entry"$'\n' ;; esac
     done < "$CONFIG_DIR/config"
   fi
   case "$wrapped" in *$'\n'*) die 'La statusline previa contiene saltos de línea; no puede guardarse como clave=valor.' ;; esac
-  config="${config}warn_at=$warn"$'\n'"handoff_at=$handoff"$'\n'"unknown_score=$UNKNOWN_SCORE"$'\n'"wrapped_statusline=$wrapped"$'\n'
+  config="${config}warn_at=$warn"$'\n'"handoff_at=$handoff"$'\n'"unknown_score=$UNKNOWN_SCORE"$'\n'"exhausted_ttl=$EXHAUSTED_TTL"$'\n'"wrapped_statusline=$wrapped"$'\n'
   if $dry; then
     printf 'Pool propuesto:\n%sConfiguración propuesta:\n%s' "$pool" "$config"
     i=0

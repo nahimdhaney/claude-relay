@@ -2,7 +2,7 @@
 cmd_statusline() {
   load_pool
   [ -n "$CURRENT_PROFILE" ] || return 0
-  local input data line wrapped='' receipts='{}' result save
+  local input data line wrapped='' receipts='{}' result save recovered
   input=$(cat; printf '.')
   input=${input%.}
   # Per-settings originals let different profiles retain distinct status lines.
@@ -27,7 +27,16 @@ cmd_statusline() {
   line=${result%%$'\n'*}
   case "$result" in *$'\n'*) wrapped=${result#*$'\n'} ;; esac
   # Missing windows never erase a previous account measurement.
-  if [ "$save" = true ]; then printf '%s' "$data" | atomic_json "$STATE_DIR/usage/$CURRENT_PROFILE.json"; fi
+  if [ "$save" = true ]; then
+    printf '%s' "$data" | atomic_json "$STATE_DIR/usage/$CURRENT_PROFILE.json"
+    if [ -f "$STATE_DIR/exhausted/$CURRENT_PROFILE.json" ]; then
+      recovered=$(printf '%s' "$data" | jq -r -L "$RELAY_ROOT/lib" --argjson h "$HANDOFF_AT" \
+        --slurpfile marker "$STATE_DIR/exhausted/$CURRENT_PROFILE.json" '
+        include "usage"; . as $data | measurement(50) |
+        .known and .score<$h and ($marker[0].at|type)=="number" and $data.captured_at>$marker[0].at')
+      if [ "$recovered" = true ]; then rm -f "$STATE_DIR/exhausted/$CURRENT_PROFILE.json"; fi
+    fi
+  fi
   # Broken/migrated receipts must not recursively launch this statusline.
   case "$wrapped" in *claude-relay*statusline*) return 1 ;; esac
   if [ -n "$wrapped" ]; then
@@ -90,15 +99,37 @@ hook_guard() {
 hook_stop_failure() {
   load_pool
   [ -n "$CURRENT_PROFILE" ] || return 0
-  local input sid transcript cwd to message
+  local input sid transcript cwd to message record event
   input=$(cat)
-  printf '%s' "$input" | jq -e '.hook_event_name=="StopFailure" and (.session_id|type=="string") and (.transcript_path|type=="string") and (.cwd|type=="string")' >/dev/null
-  sid=$(printf '%s' "$input" | jq -r .session_id)
-  transcript=$(printf '%s' "$input" | jq -r .transcript_path)
-  cwd=$(printf '%s' "$input" | jq -r .cwd)
-  cmd_handoff --from "$CURRENT_PROFILE" --to auto --session "$sid" --transcript "$transcript" --cwd "$cwd" --quiet
-  to=$(jq -er .to "$STATE_DIR/last-handoff.json")
-  message="Sesión copiada al perfil $to. Ejecuta claude-relay resume --last."
+  # JSONL escapes delimiters; strip control characters before truncation.
+  # Deliberately project an allowlist, never the transcript or full input.
+  event=$(printf '%s' "$input" | jq -ce --arg p "$CURRENT_PROFILE" '
+    def sanitized: tostring | gsub("[\u0000-\u001f\u007f-\u009f]";" ") | .[:200];
+    select(type=="object") | . as $input |
+    {at:(now|todateiso8601),profile:$p,session_id:((.session_id // "")|sanitized),keys:keys} +
+    (reduce ["error","error_type","error_details","matcher","reason","message"][] as $key
+      ({}; if $input|has($key) then .[$key]=($input[$key]|sanitized) else . end))')
+  mkdir -p "$STATE_DIR"
+  : >> "$STATE_DIR/events.log"
+  chmod 600 "$STATE_DIR/events.log"
+  printf '%s\n' "$event" >> "$STATE_DIR/events.log"
+  # Classify the original fields, including text beyond the log's 200 chars.
+  if ! printf '%s' "$input" | jq -e '
+    [ .error,.error_type,.error_details,.matcher,.reason,.message ] |
+    any(.[]; .=="rate_limit" or (tostring|test("rate.?limit|usage limit|session limit|weekly limit|hit your .*limit|limit reached";"i")))' >/dev/null; then return 0; fi
+  mark_exhausted "$CURRENT_PROFILE" stop-failure
+  message="cuenta $CURRENT_PROFILE agotada; no se pudo copiar la sesión"
+  if printf '%s' "$input" | jq -e 'all([.session_id,.transcript_path,.cwd][]; type=="string" and length>0)' >/dev/null; then
+    sid=$(printf '%s' "$input" | jq -r .session_id)
+    transcript=$(printf '%s' "$input" | jq -r .transcript_path)
+    cwd=$(printf '%s' "$input" | jq -r .cwd)
+    # A separate worker keeps errexit active even inside this conditional:
+    # failed copies must not leave a successful handoff record or skip notice.
+    if record=$("$BASH" "$RELAY_BIN" handoff --from "$CURRENT_PROFILE" --to auto --session "$sid" --transcript "$transcript" --cwd "$cwd" --quiet --json 2>/dev/null); then
+      to=$(printf '%s' "$record" | jq -er .to)
+      message="cuenta $CURRENT_PROFILE agotada; sesión copiada al perfil $to. Ejecuta claude-relay resume --last."
+    fi
+  fi
   if [ "$(uname -s)" = Darwin ] && command -v osascript >/dev/null 2>&1; then
     osascript - "$message" <<'APPLESCRIPT' >/dev/null 2>&1 || true
 on run argv
