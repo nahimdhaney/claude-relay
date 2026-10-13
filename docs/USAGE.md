@@ -87,6 +87,10 @@ with the supplied list, in that order. Without `--settings`, installation
 modifies `~/.claude/settings.json` when `claude-profile` is on PATH (that file
 is its synchronization source); otherwise, it modifies each profile's
 `settings.json`.
+claude-profile copies that file into a profile each time it launches it. If
+you start profiles another way, or set `CLAUDE_PROFILE_SYNC_SETTINGS=0`, run
+`claude-profile --sync-settings <name>` for each profile after installing, or
+install with `--settings <profile dir>/settings.json` for each one.
 
 Installation adds groups to `UserPromptSubmit`, `PostToolUse` and `StopFailure`
 (without a matcher), preserves unrelated hooks, and wraps the previous
