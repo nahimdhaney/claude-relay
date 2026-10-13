@@ -1,6 +1,7 @@
 # Relay spend ledger: design
 
-Date: 2026-10-12. Target release: v0.3.0.
+Date: 2026-10-12. Target release: v0.3.0. Revised after a Codex review the
+same day.
 
 ## Problem
 
@@ -19,154 +20,289 @@ when asked for JSON output.
 
 Success criteria:
 
-- With two no-data profiles, consecutive `forward` runs alternate between
-  them (the one with less recent relay spend wins).
-- A profile with real measured usage keeps its measured score. The ledger never
-  overrides a real percentage; it only breaks ties.
-- `forward` output, exit code and error behavior stay the same for the caller.
+- Among profiles with equal scores, `forward` chooses the one with the least
+  relay spend in the last 5 hours (not strict alternation: unequal task costs
+  can send several tasks in a row to the same profile).
+- A profile with a measured score keeps it. The ledger only orders profiles
+  whose scores are equal.
+- `forward` keeps its stdout contract (the child's final result text), its exit
+  code and its refusal behavior. Known narrowing: see "Background results".
 - The ledger never stores task or result text.
 
 Non-goals: estimating plan percentages from cost, showing dollar amounts in
 the text `status` table, or measuring interactive sessions (the statusline
 already does that).
 
-## Part 1: capture in `forward`
+Accepted policy (from the tie-break-only design): an unknown profile (score 50)
+with heavy relay spend still beats a measured 60 %. The ledger never raises a
+score.
 
-`forward` runs the child with `--output-format json` instead of `text`.
+## Facts about `claude -p --output-format json`
 
-- The child no longer `exec`s inside the subshell with its stdout going straight
-  to the caller. Its stdout goes to a private temporary file created with
-  `mktemp` inside `$STATE_DIR/tasks/` (mode 600, deleted by the same EXIT trap
-  that deletes the task file). Its stderr still goes straight to the caller.
-- After the child exits, `forward` parses the file with one jq call:
-  - Valid JSON object with a string `.result`: print `.result` followed by a
-    newline to stdout (this matches what `--output-format text` printed).
-  - `.is_error == true`: print `.result` (if any) the same way, and print
-    `claude-relay: the child reported an error (<subtype>).` to stderr.
-  - Anything else (not JSON, not an object, empty): copy the file to stdout
-    unchanged and record nothing.
-- `forward` exits with the child's exit code in every case.
-- Recording happens for new tasks and for `--continue`, and for `is_error`
-  results too (an error run still spent quota). A failure to write the record
-  prints a warning to stderr and never changes the exit code or the output.
+Observed with Claude Code 2.1.296 (a new session, then `--resume` of it):
 
-Timing is unchanged: `text` mode also printed only at the end.
+- stdout is one JSON object with `type:"result"`, `subtype` (`"success"` or an
+  error subtype), `is_error` (boolean), `result` (string; may be absent on
+  error subtypes), `session_id`, `total_cost_usd`, `usage` and `modelUsage`.
+- On `--resume`, `total_cost_usd` and every `modelUsage.<model>` counter are
+  **cumulative for the whole session**, not for the run. Example: first run
+  0.00367, resumed run reported 0.00654 (its own share about 0.00287), and
+  `modelUsage` input tokens went 2 → 4. `usage` is per run but has no cost.
+
+The design therefore records per-run deltas (Part 2).
+
+## Part 1: running the child and reading its output
+
+### Launch
+
+- `launch_claude` is not changed and keeps `exec` inside its nested subshell.
+- `forward` adds `--output-format json` instead of `text`, and runs:
+
+  ```bash
+  status=0
+  (launch_claude "$profile" child "${args[@]}") < "$task" > "$out" || status=$?
+  ```
+
+  The `|| status=$?` is required because the CLI runs under
+  `set -euo pipefail`; without it a non-zero child would abort `forward` before
+  the output is handled. The child's stderr still goes straight to the caller.
+- `$out` is a private buffer created with `mktemp "$STATE_DIR/tasks/out-XXXXXX"`
+  (mode 600 checked) after validation succeeds, and removed by the same EXIT
+  trap that removes the task file. `prune_task_files` also removes `out-*`
+  files older than one day, so a buffer left behind by SIGKILL or a crash does
+  not keep result text for long. A child running for more than a day could lose
+  its buffer; this is accepted and documented.
+- Signals keep today's behavior: HUP, INT and TERM make `forward` exit 1, the
+  EXIT trap removes the task and the buffer, and nothing is printed or
+  recorded. The child is in the same process group and receives terminal
+  signals directly. "Exit with the child's status" applies whenever `forward`
+  itself was not interrupted.
+
+### Parsing (one jq pass over the whole buffer)
+
+The buffer is an **envelope** only when the whole stream is exactly one JSON
+value (`jq -s 'length==1'`; valid JSON followed by more data is not an
+envelope), that value is an object, `.type=="result"`, and `.is_error` is a
+boolean. `.result` is not required.
+
+Precedence:
+
+1. **Envelope:** record spend (Part 2), whatever `is_error` and the exit status
+   say. Then render:
+   - `.result` is a string: print it followed by one newline to stdout (what
+     text mode printed). An empty string prints just the newline.
+   - `.is_error` is true: also print to stderr
+     `claude-relay: the child reported an error (<subtype>).`, where `<subtype>`
+     is `.subtype` when it is a string of `[a-z_]` characters, else `unknown`.
+   - Envelope says error but exit status is 0, or says success but status is
+     non-zero: render as above and exit with the status anyway.
+2. **Not an envelope** (not JSON, several values, trailing garbage, wrong
+   shape, empty): copy the buffer to stdout byte for byte and record nothing.
+
+`forward` then exits with `status`.
+
+### Background results
+
+With `text` output, a child whose background tasks finish at exit could print
+more than one result (behavior added in Claude Code 2.1.295). JSON output keeps
+only the last one. Relay children run in `plan` mode by default and rarely
+start background tasks, so this narrowing is accepted and documented in
+USAGE.md and SPEC.md.
 
 ## Part 2: the ledger
 
-One file per run:
+### Per-run delta
+
+The run's own spend is the reported cumulative totals minus the totals already
+seen for that session:
+
+- `forward` keeps the last seen totals in the session's existing record
+  `forwarded/<session>.json` as
+  `"totals":{"cost_usd":<n|null>,"models":{<model>:{in,out,cache_read,cache_write}}}`.
+- New session: the baseline is zero, so the delta is the reported total.
+- `--continue`: the delta is reported − baseline, field by field. If a field is
+  missing from the baseline (older record, crash before update) or the reported
+  value is lower than the baseline (counter reset, or a Claude Code version that
+  reports per run), the reported value is used as is. This can over-count once;
+  it never goes negative.
+- After the run, the record's `totals` is replaced with the reported values.
+  Records keep their existing 30-day lifetime, longer than the ledger's 7 days.
+
+### Files
+
+One file per run, with a unique name:
 
 ```
-~/.local/state/claude-relay/spend/<profile>/<session>-<epoch>.json
+~/.local/state/claude-relay/spend/<profile>/<session>-<epoch>-<random>.json
 ```
 
-Directories 700 (`private_dir`), files 600 (`atomic_json`). Contents:
+`<random>` comes from `mktemp`, and the file is created exclusively, so two
+continuations of the same session ending in the same second never overwrite
+each other. Directories are 700 and files 600. Contents:
 
 ```json
 {"profile":"personal2","session_id":"2b4c…","at":1791842414,
- "cost_usd":0.0412,"is_error":false,
- "models":{"claude-haiku-5-5":{"in":2,"out":40,"cache_read":11054,"cache_write":17802}}}
+ "cost_usd":0.0029,"is_error":false,
+ "models":{"claude-haiku-5-5":{"in":2,"out":3,"cache_read":15327,"cache_write":13571}}}
 ```
 
-- `cost_usd` is `.total_cost_usd` when it is a non-negative number, else `null`.
-- `models` maps each key of `.modelUsage` to its `inputTokens`, `outputTokens`,
-  `cacheReadInputTokens`, `cacheCreationInputTokens` (missing or non-numeric
-  values become 0). Missing `.modelUsage` gives `{}`.
-- `session_id` is the session `forward` assigned or resumed (not the child's
-  self-reported one), so the name is always a validated UUID.
-- Only numbers, model names, the profile name and the session ID are stored.
-  Never task text, result text, `permission_denials`, or anything else from the
-  child's output.
+Normalization rules, applied before anything is written:
 
-One file per run means concurrent `forward` runs never write the same file.
+- Numbers must be finite (`isinfinite`/`isnan` are false) and in
+  `0 ≤ cost ≤ 100000` USD, `0 ≤ tokens ≤ 1e12`. A cost outside those bounds
+  becomes `null`, and a token count outside them becomes 0.
+- `modelUsage` that is not an object gives `{}`. Entries whose value is not an
+  object are skipped, and model names are kept only if they match
+  `^[A-Za-z0-9._:\[\]-]{1,128}$`.
+- `is_error` is copied as a boolean (the envelope guarantees it).
+- `session_id` and `profile` are the values `forward` validated, never the
+  child's self-reported ones.
+- Only these fields are written: never task text, result text,
+  `permission_denials`, or any other part of the child's output.
 
-Pruning: `forward` deletes ledger files older than 7 days (by mtime, with the
-`touch -t` cutoff + `find ! -newer` pattern already used by `prune_state`)
-before writing its own record. `prune_state` does the same, so the ledger also
-shrinks when relay is not used. Symlinked directories and files are skipped,
-never followed.
+### Writing without errexit
+
+Recording must not change `forward`'s output or exit status, so it is called
+as `record_spend ... || warn`. Inside an `||` context Bash disables errexit,
+which would let a failed check fall through to the rename. Therefore
+`record_spend`, and the helpers it calls, check every step explicitly
+(`private_dir`, building the JSON, validating it, `chmod 600`, verifying the
+mode, the final `mv`) and `return 1` on the first failure. `atomic_json` gets
+the same explicit checks, which also hardens its other callers. Updating
+`forwarded/<session>.json` `totals` follows the same rule. A failure prints
+`claude-relay: could not record relay spend: <reason>` to stderr.
+
+### Pruning
+
+`record_spend` deletes ledger files older than 7 days (the `touch -t` cutoff +
+`find ! -newer` pattern from `prune_state`) before writing. `prune_state`,
+which is already throttled to once per 10 minutes, does the same, so the
+ledger shrinks even when relay is unused. Symlinked directories and files are
+skipped, never followed.
 
 ## Part 3: using the ledger in `pick`
 
-New function `relay_spend <profile>` returns, from that profile's ledger files
-with `at >= now - 18000` (a rolling 5 hours):
+### `relay_spend <profile>`
 
-```json
-{"cost_usd":0.21,"runs":4}
-```
+It returns `{"cost_usd":<n>,"runs":<n>,"complete":<bool>}` for that profile's
+records from the last 5 hours (a rolling window, because no-data profiles have
+no known reset time).
 
-`null` costs add 0 to `cost_usd` but still count in `runs`. Damaged files are
-skipped one by one (same fallback as `captures`). No directory gives
-`{"cost_usd":0,"runs":0}`.
+- Files are preselected with `find -newer <5-hour cutoff>`, so old files are
+  never read. All selected files are read in one jq call, and only if that call
+  fails is each file read separately (the same fallback as `captures`).
+- A record counts only if it is an object, `.profile` equals the directory's
+  profile, `.at` is a finite number with `now-18000 ≤ at ≤ now+60`, and
+  `.cost_usd` is a finite number ≥ 0 or `null`.
+- `cost_usd` sums the non-null costs. `runs` counts every valid record.
+  `complete` is false when any counted record has a `null` cost.
+- A missing or symlinked `spend/` or profile directory gives
+  `{"cost_usd":0,"runs":0,"complete":true}`.
 
-`choose_profile` keeps its eligibility rule (`score < handoff_at`, not
-excluded, directory exists). Among eligible profiles it picks the lowest key:
+### Choosing
 
-```
-[score, relay cost in the last 5 h, relay runs in the last 5 h, pool position]
-```
+`choose_profile` keeps its eligibility rule: `score < handoff_at`, not
+excluded, and the directory exists. Among eligible profiles:
 
-So a measured 30 % still beats a no-data 50 % regardless of spend; only equal
-scores fall through to spend. The comparison is done in jq (costs are
-fractional). The rolling window is used because no-data profiles have no known
-reset time.
+1. The lowest score wins, as today.
+2. If several share the lowest score: when all of them have
+   `complete:true`, the lowest `cost_usd` wins, then the fewest `runs`. When any
+   of them has `complete:false`, costs are not comparable, so the fewest `runs`
+   wins, then the lowest `cost_usd`.
+3. Remaining ties go to the first profile in pool order.
 
-Every caller of `choose_profile` benefits: `forward`, `pick`, `run --pick`, and
-the handoff target chosen by `stop-failure` and `guard`.
+The comparison happens in jq because costs are fractional. Every caller
+benefits: `forward`, `pick`, `run --pick`, and the handoff target chosen by
+`guard` and `stop-failure`.
 
-Exposure: `pick --json` and `status --json` add
-`"relay_spend_5h":{"cost_usd":…,"runs":…}` to each row. The text `status`
-table does not change. `cost_usd` is documented as a relative weight between
-accounts, not a bill: subscription plans do not charge per run.
+### Exposure
 
-## Part 4: errors and compatibility
+`pick --json` and `status --json` add
+`"relay_spend_5h":{"cost_usd":…,"runs":…,"complete":…}` to each row.
+`status` calls `relay_spend` itself, since it does not go through
+`choose_profile`. The text `status` table does not change. The docs describe
+`cost_usd` as a relative weight between accounts, not a bill: subscription
+plans do not charge per run.
 
-- jq 1.6 and Bash 3.2 compatible: only jq 1.6 builtins, no
-  `mapfile`, no associative arrays, empty-array-safe expansions as elsewhere.
-- Spend lookup must not slow the hooks noticeably: one jq call per profile over
-  that profile's files, only inside `choose_profile`. The `guard` hot path calls
-  `choose_profile` only when it is about to request a handoff.
-- If `$STATE_DIR/spend` or a profile subdirectory is a symlink, `relay_spend`
-  returns zeros and `forward` skips recording with a warning.
-- Older Claude Code versions without `total_cost_usd` or `modelUsage` still
-  produce records (`cost_usd: null`, `models: {}`), which count as runs.
+## Part 4: compatibility and performance
+
+- Bash 3.2 and jq 1.6: only jq 1.6 builtins (`isinfinite`, `isnan`, `test`
+  exist there), no `mapfile`, no associative arrays, and empty-array-safe
+  expansions as elsewhere.
+- Hot path: `guard` calls `choose_profile` only when it is about to request a
+  handoff, and the ordinary guard test (score 20) does not reach it. Part 5 adds
+  a benchmark of the handoff path with a populated ledger.
+- Claude Code versions without `total_cost_usd` or `modelUsage` still produce
+  records (`cost_usd:null`, `models:{}`). These count as runs and set
+  `complete:false`.
 - `uninstall --purge` already removes the whole state directory, ledger
   included. `doctor` needs no change.
 
 ## Part 5: tests
 
-New file `tests/spend-ledger.sh`, wired into `tests/run.sh`. The fake `claude`
-used by existing forward tests learns to emit a JSON result when called with
-`--output-format json`, controlled by environment variables (cost, models,
-`is_error`, exit code, or raw non-JSON output).
+New file `tests/spend-ledger.sh`, wired into `tests/run.sh`.
+
+Fake Claude: the existing fixture behavior (stdin capture, `exit 7` probes in
+`forward-and-preview.sh` and `v022.sh`) stays exactly as it is. JSON mode is
+used only when the test sets `FAKE_CLAUDE_JSON` (the envelope to print,
+or a raw file) and `FAKE_CLAUDE_STATUS`. Existing forward tests are updated
+only to expect `--output-format json` in the child's argv.
+
+Tests that pick between two targets need three pool profiles, because
+`forward` always excludes the current one.
 
 Cases:
 
-1. Output: `.result` printed exactly as text mode did; exit code preserved for
-   0 and non-zero; `is_error` prints the result plus the stderr note.
-2. Non-JSON child output is passed through byte for byte and records nothing.
-3. Record contents: fields and types above; no task or result text anywhere in
-   `spend/` (grep for a marker string placed in both).
-4. Permissions: `spend/`, `spend/<profile>/` are 700, records are 600.
-5. `--continue` records under the recorded profile and session.
-6. Tie-break: two no-data profiles, spend recorded on the first → `pick`
-   returns the second; equal cost → fewer runs wins; all equal → pool order.
-7. A real score still wins: a measured 30 % beats a no-data 50 % with zero spend.
-8. Window: records older than 5 hours are ignored by `relay_spend`; records
-   older than 7 days are pruned.
-9. Damaged and symlinked ledger files are ignored; a symlinked `spend/` makes
-   `forward` warn and still succeed.
-10. `status --json` and `pick --json` include `relay_spend_5h`.
-11. Existing forward tests updated for `--output-format json` in the child's
-    argv.
+1. Output bytes: `.result` plus a newline, compared byte for byte, including an
+   empty result, embedded newlines and a trailing newline in the result.
+2. Exit status preserved for 0 and non-zero, including both disagreement cases
+   (error envelope + status 0, success envelope + status 3).
+3. An error envelope without `.result`: nothing on stdout, the stderr note,
+   spend recorded.
+4. Not an envelope (plain text, text without a final newline, two JSON objects,
+   JSON + garbage, `{}`): byte-identical passthrough, no record.
+5. Record contents and normalization: the fields above; NaN-free, bounded
+   numbers; malformed `modelUsage` and entries; an invalid model name dropped.
+   A marker string placed in both the task and the result appears nowhere under
+   `spend/` or `forwarded/`.
+6. Permissions: `spend/` and `spend/<profile>/` are 700, records are 600, and
+   the buffer is 600 while it exists.
+7. Deltas: a new session records the reported total. `--continue` with
+   cumulative totals records reported − baseline. A missing baseline and a
+   reported value below the baseline record the reported value. `totals` is
+   updated after each run.
+8. Unique files: two records for the same session in the same second (forced
+   epoch) both survive.
+9. Recording failure (spend directory replaced by a symlink, or an unwritable
+   directory) prints the warning, and the child's stdout and status are
+   unchanged.
+10. Tie-break: equal scores with spend on one profile choose the other; equal
+    cost goes to fewer runs; incomplete costs go to fewer runs; all equal goes
+    to pool order.
+11. A measured 30 % beats a no-data 50 % with zero spend, and a no-data 50 %
+    with spend still beats a measured 60 %.
+12. Window and pruning: records older than 5 hours are ignored, future
+    timestamps and wrong-profile records are ignored, and files older than 7
+    days are pruned by `forward` and by `prune_state`.
+13. Damaged and symlinked ledger files are ignored without hiding valid ones.
+14. Buffer cleanup: a stale `out-*` older than a day is pruned, and a fresh
+    one is kept. After an interrupted `forward` (TERM), no task or buffer is
+    left and nothing is recorded.
+15. `status --json` and `pick --json` include `relay_spend_5h`.
+16. Benchmark: the guard handoff path with 3 profiles and 300 ledger files each
+    (mostly older than 5 h) stays under 1.5 s. The existing 300 ms guard test is
+    kept.
 
-Run under both `bash` and `/bin/bash` (3.2) and in CI with jq 1.6.
+Run under both `bash` and `/bin/bash` (3.2), and in CI with jq 1.6.
 
 ## Documentation
 
-Update docs/SPEC.md (forward output handling, ledger, tie-break), docs/USAGE.md
-(`relay_spend_5h` in JSON output), docs/HOW-IT-WORKS.md (the "Not measured"
-note becomes "not measured as a percentage; relay spend is recorded", and the
-storage table gains the `spend/` row), README FAQ "Why does an account show
-no data?" (mention that relay runs are tracked for tie-breaking), and
-SECURITY.md (what the ledger stores).
+- docs/SPEC.md: forward output handling, background-results narrowing, the
+  ledger and deltas, the tie-break.
+- docs/USAGE.md: `relay_spend_5h` in JSON output, the narrowing.
+- docs/HOW-IT-WORKS.md: the "Not measured" note becomes "not measured as a
+  percentage; relay spend is recorded and used to break ties", and the storage
+  table gains the `spend/` row and the `out-*` buffers.
+- README FAQ "Why does an account show no data?": mention that relay runs are
+  tracked for tie-breaking.
+- SECURITY.md: what the ledger stores and what it never stores.
