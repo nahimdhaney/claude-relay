@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=lib/spend.sh
+source "$RELAY_ROOT/lib/spend.sh"
 # Project only the two permitted login metadata fields, never whole auth data.
 account_metadata() {
   local file="$1/.claude.json"
@@ -342,6 +344,8 @@ cmd_forward() (
     else "raw" end' "$out" 2>/dev/null) || kind=raw
   case "$kind" in
     envelope*)
+      "$BASH" "$RELAY_BIN" __record-spend "$profile" "$session" "$out" >&2 ||
+        printf 'claude-relay: could not record relay spend.\n' >&2
       IFS=$'\t' read -r kind has_result is_error subtype <<< "$kind"
       if [ "$has_result" = true ]; then jq -sj '.[0].result' "$out"; printf '\n'; fi
       [ "$is_error" != true ] || printf 'claude-relay: the child reported an error (%s).\n' "$subtype" >&2 ;;

@@ -118,9 +118,9 @@ jq -n '{profile:"a",session_id:"overlap",model:"newer",captured_at:(now+60),rate
 cp "$STATE/usage/a/overlap.json" "$SANDBOX/newer-capture"
 (
   source "$ROOT/lib/common.sh"
+  RELAY_ROOT=$ROOT
   source "$ROOT/lib/profiles.sh"
   source "$ROOT/lib/hooks.sh"
-  RELAY_ROOT=$ROOT
   init_config
   load_pool
   store_capture "$(jq '.captured_at-=60 | .model="older" | .rate_limits.seven_day.used_percentage=10' "$SANDBOX/newer-capture")"

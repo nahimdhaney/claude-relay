@@ -23,6 +23,10 @@ if [ -n "${FAKE_CLAUDE_OUTPUT:-}" ]; then
       LC_ALL=C ls -ld "$buffer" | cut -c1-10 > "$FAKE_CLAUDE_BUFFER_MODE"
     done
   fi
+  if [ -n "${FAKE_CLAUDE_REMOVE_PROFILE:-}" ]; then
+    awk -F '\t' -v profile="$FAKE_CLAUDE_REMOVE_PROFILE" '$1 != profile' "$XDG_CONFIG_HOME/claude-relay/pool" > "$TMPDIR/pool"
+    mv "$TMPDIR/pool" "$XDG_CONFIG_HOME/claude-relay/pool"
+  fi
   [ "${FAKE_CLAUDE_SIGNAL:-}" != TERM ] || kill -TERM $$
   cat "$FAKE_CLAUDE_OUTPUT"
   exit "${FAKE_CLAUDE_STATUS:-0}"

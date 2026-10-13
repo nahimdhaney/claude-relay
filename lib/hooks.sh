@@ -84,6 +84,7 @@ prune_state() (
     while IFS= read -r -d '' file; do rm -f "$file"; done < <(find "$dir" -type f ! -newer "$cutoff" -print0)
   done
   prune_task_files
+  prune_spend
   jq -n '{at:now}' | atomic_json "$STATE_DIR/prune.json"
 )
 cmd_statusline() {
