@@ -25,15 +25,19 @@ traffic of each account.
 
 ## Measuring quota
 
-Claude Code exposes plan usage (the 5-hour and 7-day windows) in exactly one
-place: the JSON it sends to the statusline command on every reply. Hooks do not
-receive it and `claude -p` does not run the statusline. So claude-relay
-installs its own statusline command, which saves one snapshot per session.
+Claude Code exposes plan usage (the 5-hour and 7-day windows) in two places:
+the JSON it sends to the statusline command on every interactive reply, and the
+`rate_limit_event` line of `claude -p --output-format stream-json --verbose`.
+Hooks do not receive it. So claude-relay installs its own statusline command,
+which saves one snapshot per session, and `forward` saves the same kind of
+snapshot for each relay run.
 
 ```mermaid
 flowchart LR
   CC[Claude Code<br/>every reply] -- rate_limits --> SL[claude-relay statusline]
   SL -- saves if changed --> U[(usage/&lt;profile&gt;/&lt;session&gt;.json)]
+  RC[claude -p child<br/>stream-json] -- rate_limit_event --> FW[claude-relay forward]
+  FW -- saves --> U
   U --> G[hook guard<br/>every prompt and tool call]
   G -- 90% --> W[tell the model: wrap up]
   G -- 97% --> H[tell the model: write a handoff now]
@@ -50,7 +54,8 @@ rewritten only when its numbers change, so an idle re-render never looks fresh.
 **Exhausted accounts.** An account that is already at its limit never produces
 a new snapshot (it gets no successful reply). When a turn fails on a limit, the
 `stop-failure` hook marks the profile exhausted until its known reset time, so
-`pick` skips it. You can also do it by hand: `claude-relay exhausted <profile> --for 4h`.
+`pick` skips it. A relay run that reports `"status":"rejected"` with a future
+reset does the same. You can also do it by hand: `claude-relay exhausted <profile> --for 4h`.
 
 ## Handoff: moving a whole conversation
 
@@ -102,7 +107,8 @@ is done, prints the result and exits.
   settings, hooks, MCP servers, agents, memory. Changing that variable is how
   claude-relay makes a child run on another account.
 - **Output:** `--output-format text` (just the answer), `json` (answer plus
-  session id, cost and usage), or `stream-json` (every step as it happens).
+  session id, cost and usage), or `stream-json` (every step as it happens,
+  including quota). `forward` uses `stream-json --verbose`.
 - **Permissions:** nobody is there to approve anything, so any tool call that
   would ask for permission is denied and listed in `permission_denials`. The
   permission mode must be chosen up front: `plan` (read only), `acceptEdits`
@@ -112,9 +118,10 @@ is done, prints the result and exits.
   script the child can edit is close to allowing anything in that repository.
 - **Sessions:** the child's conversation is saved like any other, so it can be
   resumed later with `--resume <session-id>`.
-- **Not measured as a percentage:** the statusline does not run, but `forward`
-  records each run's cost and uses it to break ties between accounts with equal
-  scores.
+- **Measured through stream-json:** the statusline does not run, but relay runs
+  report quota through stream-json. `forward` saves the child account's
+  percentages like an interactive reply would. It also records each run's cost
+  and uses it to break ties between accounts with equal scores.
 
 ## Relay: forwarding a task
 
@@ -131,12 +138,32 @@ sequenceDiagram
   R->>F: claude-relay forward --task-file PATH
   F->>F: validate file, pick account B, DEPTH=1
   F->>C: task on stdin
-  C-->>F: JSON result (text, cost)
-  F->>F: record cost in spend/
-  F-->>R: result + "profile B, session S"
+  F-->>R: stderr: "profile B, session S"
+  loop while the child works
+    C-->>F: stream-json event (one JSON line)
+    F->>F: copy the line to the private output buffer
+    F-->>R: stderr: "  · Read lib/a.sh" for each tool call
+  end
+  C-->>F: last line: the result
+  F->>F: record quota in usage/, cost in spend/
+  F-->>R: stdout: the result text
   F->>F: delete the task file and output buffer
   R-->>M: result
 ```
+
+**How `forward` reads the child.** The child runs with `--output-format
+stream-json --verbose`, so it writes one JSON event per line as it works: its
+start, each assistant message, each tool call and result, the account's quota,
+and finally the result. `forward` copies every byte into a private output
+buffer. At the same time it looks at each line and, for every tool call, prints
+a short progress line on stderr, such as `  · Read lib/a.sh` or
+`  · Bash bash tests/run.sh`. Only the tool name and one short detail are
+shown, never tool results, file contents or assistant text. When the child
+exits, `forward` reads the whole buffer once. It saves the quota as a usage
+snapshot of the child's account, records the cost in the spend ledger, and
+prints only the final result on stdout. If the output is not a stream (for
+example plain text), it is printed unchanged. `forward --quiet` turns off the
+progress lines.
 
 **Who does what.** There is exactly one subagent: `relay`. It is a cheap
 messenger running on Haiku in your current account, and it never works on the
@@ -238,12 +265,12 @@ server.
 
 | Path (under `~/.local/state/claude-relay/`) | What it is | How long it stays |
 |---|---|---|
-| `usage/<profile>/<session>.json` | One quota snapshot per session | Pruned after `capture_max_age` (6 h), except the newest per profile |
+| `usage/<profile>/<session>.json` | One quota snapshot per session, including relay runs | Pruned after `capture_max_age` (6 h), except the newest per profile |
 | `exhausted/<profile>.json` | "This account is exhausted until …" | Until the reset, or until fresh data shows room |
 | `handoffs/<project>/*.md` | Handoff summaries written by the model at 97 % | Until you delete them |
 | `last-handoff.json` | Which session moved from which profile to which | Replaced on every handoff |
 | `tasks/task-*.txt` | Relay tasks in transit | Deleted after forwarding; stale ones after a day |
-| `tasks/out-*` | The child's output while `forward` runs | Deleted when `forward` ends; stale ones after a day |
+| `tasks/out-*` | The child's output stream while `forward` runs, including tool output | Deleted when `forward` ends; stale ones after a day |
 | `spend/<profile>/*.json` | Cost and token counts of each relay run; never text | 7 days |
 | `forwarded/<session>.json` | Child sessions and cumulative totals (for `--continue`) | Pruned after 30 days without use |
 | `events.log` | One line per turn that failed, with only the error type, truncated | Until you delete it |

@@ -15,7 +15,7 @@ init_config() {
   CONFIG_DIR="$(absolute_path "${XDG_CONFIG_HOME:-$HOME/.config}")/claude-relay"
   STATE_DIR="$(absolute_path "${XDG_STATE_HOME:-$HOME/.local/state}")/claude-relay"
   POOL_FILE="$CONFIG_DIR/pool"
-  WARN_AT=90 HANDOFF_AT=97 UNKNOWN_SCORE=50 EXHAUSTED_TTL=3600 CAPTURE_MAX_AGE=21600 MAX_DEPTH=1 WRAPPED_STATUSLINE= CHILD_MODEL= CHILD_ALLOWED_TOOLS=
+  WARN_AT=90 HANDOFF_AT=97 UNKNOWN_SCORE=50 EXHAUSTED_TTL=3600 CAPTURE_MAX_AGE=21600 MAX_DEPTH=1 WRAPPED_STATUSLINE= CHILD_MODEL= CHILD_ALLOWED_TOOLS= FORWARD_PROGRESS=
   local key value
   if [ -f "$CONFIG_DIR/config" ]; then
     while IFS='=' read -r key value || [ -n "$key" ]; do
@@ -28,6 +28,7 @@ init_config() {
         # Validated by forward, its only consumer, so other commands keep working.
         child_model) CHILD_MODEL=$value ;;
         child_allowed_tools) CHILD_ALLOWED_TOOLS=$value ;;
+        forward_progress) FORWARD_PROGRESS=$value ;;
       esac
     done < "$CONFIG_DIR/config"
   fi

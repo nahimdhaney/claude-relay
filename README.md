@@ -50,7 +50,7 @@ You need Git, Bash 3.2+, jq 1.6+, and Claude Code signed in on each account.
 This clones a pinned release and shows a preview without changing anything:
 
 ```bash
-git clone https://github.com/nahimdhaney/claude-relay.git "$HOME/.local/share/claude-relay" && cd "$HOME/.local/share/claude-relay" && git checkout v0.3.0 && ./install.sh --dry-run
+git clone https://github.com/nahimdhaney/claude-relay.git "$HOME/.local/share/claude-relay" && cd "$HOME/.local/share/claude-relay" && git checkout v0.4.0 && ./install.sh --dry-run
 ```
 
 If you have several logins, the preview lists them; pick the ones to use:
@@ -61,7 +61,7 @@ If you have several logins, the preview lists them; pick the ones to use:
 ```
 
 Then add `~/.local/bin` to your `PATH` if asked, and restart open Claude Code
-sessions. Each account starts reporting quota after its first reply.
+sessions. Each account starts reporting quota after its first reply or relay run.
 
 ### Update
 
@@ -109,12 +109,26 @@ To delegate a task to another account, ask your agent:
 Use the relay agent to have another account review lib/parser.sh for bugs.
 ```
 
+While the other account works, `forward` shows each tool it uses on stderr,
+then prints the answer:
+
+```text
+claude-relay: profile side, session 3f2a9c1e-8b7d-4e60-9a1f-2c4b5d6e7f80
+  · Read lib/parser.sh
+  · Grep src
+  · Bash bash tests/run.sh
+The parser drops the last field when a line ends with a comma. …
+```
+
+Add `--quiet` to `forward` to hide these lines.
+
 ## Good to know
 
 - The installed hooks run from the folder you cloned. Keep it where only you can
   write, and stay on a release tag rather than `main`.
-- `claude -p` does not report quota percentages. Relay records each forwarded
-  run's cost to break score ties. Quota readings can be a little stale.
+- Relay runs report quota through stream-json, so a forwarded run updates the
+  other account's percentages. Relay also records each run's cost to break
+  score ties. Quota readings can be a little stale.
 - A handoff relies on Claude Code's session files, whose format can change
   between Claude Code versions.
 - The first time an account opens a new folder, Claude Code asks you to trust it.
@@ -139,10 +153,10 @@ responsible for following Anthropic's
 or company accounts.
 
 **Why does an account show "no data"?**
-Quota is only reported after an interactive reply on that account, and old
-readings expire. Relay runs are not measured as a percentage either, but their
-cost is recorded. This lets `pick` spread relay work across accounts without
-data by breaking score ties with the last 5 hours of relay spend.
+An account gets data after its first interactive reply or relay run, and old
+readings expire. Relay runs also record their cost. This lets `pick` spread
+relay work across accounts with equal scores, using the last 5 hours of relay
+spend.
 
 **Does it work on Linux and with team seats?**
 Yes. It is tested on macOS and Ubuntu. Team seats report only the 5-hour window.

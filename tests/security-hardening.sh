@@ -15,7 +15,7 @@ cp "$SANDBOX/task-original" "$TASK6"
 rc=0; relay forward --task-file "$TASK6" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
 check equals "$rc" 0
 check cmp -s "$SANDBOX/task-original" "$FAKE_STDIN"
-check json_is "$FAKE_LOG" '.depth=="1" and (.config|endswith("/b")) and .args[0:4]==["-p","--output-format","json","--session-id"] and .args[5:]==["--permission-mode","plan"]'
+check json_is "$FAKE_LOG" '.depth=="1" and (.config|endswith("/b")) and .args[0:5]==["-p","--output-format","stream-json","--verbose","--session-id"] and .args[6:]==["--permission-mode","plan"]'
 check test ! -e "$TASK6"
 cp "$SANDBOX/task-original" "$TASK6"
 relay forward --task-file "$TASK6" --write > "$SANDBOX/out" 2> "$SANDBOX/err" || true

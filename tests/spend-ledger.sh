@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sourced by run.sh: v0.3.0 JSON child output and the relay spend ledger.
+# Sourced by run.sh: single-envelope child output and the relay spend ledger.
 write_pool
 printf 'warn_at=90\nhandoff_at=97\nunknown_score=50\n' > "$XDG_CONFIG_HOME/claude-relay/config"
 unset CLAUDE_RELAY_DEPTH CLAUDE_RELAY_MAX_DEPTH CLAUDE_RELAY_CHILD_MODEL CLAUDE_RELAY_CHILD_ALLOWED_TOOLS
@@ -16,12 +16,12 @@ fwd() {
 }
 export FAKE_CLAUDE_OUTPUT="$SANDBOX/child.json"
 
-# 1: argv uses json; .result + newline, byte for byte.
+# 1: argv uses stream-json; .result + newline, byte for byte.
 envelope "$FAKE_CLAUDE_OUTPUT" '{"type":"result","subtype":"success","is_error":false,"result":"line one\nline\ttwo ✓ 🐄\n","total_cost_usd":0.5,"modelUsage":{}}'
 FAKE_CLAUDE_BUFFER_MODE="$SANDBOX/buffer-mode" fwd
 check equals "$(cat "$SANDBOX/buffer-mode")" -rw-------
 check equals "$rc" 0
-check jq -e '.args[0:3]==["-p","--output-format","json"]' "$FAKE_LOG"
+check jq -e '.args[0:4]==["-p","--output-format","stream-json","--verbose"]' "$FAKE_LOG"
 printf 'line one\nline\ttwo ✓ 🐄\n\n' > "$SANDBOX/expect"
 check cmp -s "$SANDBOX/out" "$SANDBOX/expect"
 envelope "$FAKE_CLAUDE_OUTPUT" '{"type":"result","subtype":"success","is_error":false,"result":""}'
@@ -53,12 +53,19 @@ done
 
 # 4: not an envelope -> byte-identical passthrough.
 BEFORE_RAW=$(find "$STATE/spend" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
-for raw in 'plain text' 'no newline at end' '{"type":"result","is_error":false}{"x":1}' '{"type":"result","is_error":false} garbage' '{}' '[1]' 'null' 'true' '1' '"text"' '{"type":"result","is_error":null}' '{"type":"other","is_error":false}'; do
+for raw in 'plain text' 'no newline at end' '{"type":"result","is_error":false}{"x":1}' '{"type":"result","is_error":false} garbage' '{}' '[1]' 'null' 'true' '1' '"text"'; do
   printf '%s' "$raw" > "$FAKE_CLAUDE_OUTPUT"
   fwd
   check cmp -s "$SANDBOX/out" "$FAKE_CLAUDE_OUTPUT"
 done
 : > "$FAKE_CLAUDE_OUTPUT"; fwd; check test ! -s "$SANDBOX/out"
+# Typed objects without a boolean is_error are a stream with no result (v0.4.0).
+for raw in '{"type":"result","is_error":null}' '{"type":"other","is_error":false}'; do
+  printf '%s' "$raw" > "$FAKE_CLAUDE_OUTPUT"
+  fwd
+  check test ! -s "$SANDBOX/out"
+  check grep -qxF 'claude-relay: the child ended without a result.' "$SANDBOX/err"
+done
 check equals "$(find "$STATE/spend" -type f 2>/dev/null | wc -l | tr -d ' ' || true)" "$BEFORE_RAW"
 
 # Review focus 1: about 2 MB result, byte-identical.
@@ -94,7 +101,7 @@ envelope "$FAKE_CLAUDE_OUTPUT" '{"type":"result","subtype":"success","is_error":
    "bad name; rm":{"inputTokens":1},"newline\n":{"inputTokens":1},"array":[],"null":null,"weird":5,"neg":{"inputTokens":-3,"outputTokens":"9","cacheReadInputTokens":1e13,"cacheCreationInputTokens":1e999}}}'
 fwd
 check equals "$(wc -l < "$SANDBOX/err" | tr -d ' ')" 1
-SIDL=$(jq -r '.args[4]' "$FAKE_LOG")
+SIDL=$(jq -r '.args[5]' "$FAKE_LOG")
 check equals "$(find "$STATE/spend/b" -name '*.json' | wc -l | tr -d ' ')" 1
 RECL=$(find "$STATE/spend/b" -name '*.json' 2>/dev/null || true)
 check jq -e --arg s "$SIDL" '.profile=="b" and .session_id==$s and .cost_usd==0.25 and .is_error==false and (.at|type)=="number" and .at<=now
@@ -117,7 +124,7 @@ check equals "$(LC_ALL=C ls -l "$RECL" | cut -c1-10)" -rw-------
 # 7: deltas on --continue.
 rm -rf "$STATE/spend"
 envelope "$FAKE_CLAUDE_OUTPUT" '{"type":"result","is_error":false,"result":"one","total_cost_usd":1.0,"modelUsage":{"m":{"inputTokens":10,"outputTokens":5,"cacheReadInputTokens":100,"cacheCreationInputTokens":50}}}'
-fwd; SIDD=$(jq -r '.args[4]' "$FAKE_LOG")
+fwd; SIDD=$(jq -r '.args[5]' "$FAKE_LOG")
 envelope "$FAKE_CLAUDE_OUTPUT" '{"type":"result","is_error":false,"result":"two","total_cost_usd":1.25,"modelUsage":{"m":{"inputTokens":14,"outputTokens":7,"cacheReadInputTokens":180,"cacheCreationInputTokens":50}}}'
 fwd --continue "$SIDD"
 check jq -se 'sort_by(.cost_usd)|.[0].cost_usd==0.25 and .[0].models.m=={"in":4,"out":2,"cache_read":80,"cache_write":0} and .[1].cost_usd==1' "$STATE/spend/b/"*.json
@@ -148,12 +155,12 @@ check equals "$(find "$STATE/spend" -name '*.json' | wc -l | tr -d ' ')" 2
 rm -rf "$STATE/spend"; mkdir -p "$SANDBOX/elsewhere"; ln -s "$SANDBOX/elsewhere" "$STATE/spend"
 FAKE_CLAUDE_STATUS=4 fwd
 check equals "$rc" 4; check equals "$(cat "$SANDBOX/out")" c
-check grep -qxF 'claude-relay: could not record relay spend.' "$SANDBOX/err"
+check grep -qxF 'claude-relay: could not record relay run data.' "$SANDBOX/err"
 check test -z "$(ls -A "$SANDBOX/elsewhere")"
 rm -f "$STATE/spend"
-rc=0; relay __record-spend zz "$SIDD" "$STATE/tasks/out-nope" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
+rc=0; relay __record-run zz "$SIDD" "$STATE/tasks/out-nope" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
 check test "$rc" -ne 0; check test ! -s "$SANDBOX/out"; check test ! -e "$STATE/spend/zz"
-rc=0; relay __record-spend b "$SIDD" "$SANDBOX/child.json" 2>/dev/null || rc=$?
+rc=0; relay __record-run b "$SIDD" "$SANDBOX/child.json" 2>/dev/null || rc=$?
 check test "$rc" -ne 0
 
 # 12 (pruning part): files older than 7 days are pruned by forward and prune_state.
@@ -169,13 +176,13 @@ BUFFER="$STATE/tasks/out-worker"
 for cost in '"0.5"' -1 100001 1e999 null true '{}' '[]'; do
   printf '{"type":"result","is_error":false,"total_cost_usd":%s,"modelUsage":[]}\n' "$cost" > "$BUFFER"
   chmod 600 "$BUFFER"
-  rc=0; relay __record-spend b "$SIDD" "$BUFFER" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
+  rc=0; relay __record-run b "$SIDD" "$BUFFER" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
   check equals "$rc" 0
   check test ! -s "$SANDBOX/out"
 done
 check jq -se 'length==8 and all(.[]; .cost_usd==null and .models=={})' "$STATE/spend/b/"*.json
 envelope "$BUFFER" '{"type":"result","is_error":true,"total_cost_usd":100000,"modelUsage":{"m[1]:_-.":{"inputTokens":1e12,"outputTokens":0}}}'
-rc=0; relay __record-spend b "$SIDD" "$BUFFER" 2> "$SANDBOX/err" || rc=$?
+rc=0; relay __record-run b "$SIDD" "$BUFFER" 2> "$SANDBOX/err" || rc=$?
 check equals "$rc" 0
 check jq -se 'any(.[]; .cost_usd==100000 and .is_error and .models["m[1]:_-."]["in"]==1e12)' "$STATE/spend/b/"*.json
 
@@ -184,23 +191,23 @@ for baseline in '[]' '{"cost_usd":-1,"models":{"m":[]}}'; do
   jq --argjson t "$baseline" '.totals=$t' "$STATE/forwarded/$SIDD.json" > "$SANDBOX/rec"
   mv "$SANDBOX/rec" "$STATE/forwarded/$SIDD.json"
   envelope "$BUFFER" '{"type":"result","is_error":false,"total_cost_usd":3,"modelUsage":{"m":{"inputTokens":4}}}'
-  rc=0; relay __record-spend b "$SIDD" "$BUFFER" 2> "$SANDBOX/err" || rc=$?
+  rc=0; relay __record-run b "$SIDD" "$BUFFER" 2> "$SANDBOX/err" || rc=$?
   check equals "$rc" 0
 done
 check jq -se 'map(select(.cost_usd==3 and .models.m.in==4))|length==2' "$STATE/spend/b/"*.json
 
 # Repeated same-session writes are unique, including within the same second.
 rm -rf "$STATE/spend"
-rc=0; relay __record-spend b "$SIDD" "$BUFFER" 2>/dev/null || rc=$?
+rc=0; relay __record-run b "$SIDD" "$BUFFER" 2>/dev/null || rc=$?
 check equals "$rc" 0
-rc=0; relay __record-spend b "$SIDD" "$BUFFER" 2>/dev/null || rc=$?
+rc=0; relay __record-run b "$SIDD" "$BUFFER" 2>/dev/null || rc=$?
 check equals "$rc" 0
 check equals "$(find "$STATE/spend/b" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" 2
 
 # Every non-envelope is ignored even by the worker directly.
 for raw in '' 'text' '{}' '[1]' 'null' '{"type":"result","is_error":false}{}' '{"type":"result","is_error":false} garbage'; do
   printf '%s' "$raw" > "$BUFFER"
-  rc=0; relay __record-spend b "$SIDD" "$BUFFER" > "$SANDBOX/out" 2>/dev/null || rc=$?
+  rc=0; relay __record-run b "$SIDD" "$BUFFER" > "$SANDBOX/out" 2>/dev/null || rc=$?
   check equals "$rc" 0
   check test ! -s "$SANDBOX/out"
 done
@@ -211,7 +218,7 @@ envelope "$FAKE_CLAUDE_OUTPUT" '{"type":"result","is_error":false,"result":"pool
 FAKE_CLAUDE_REMOVE_PROFILE=b FAKE_CLAUDE_STATUS=4 fwd
 check equals "$rc" 4
 check equals "$(cat "$SANDBOX/out")" 'pool changed'
-check grep -qxF 'claude-relay: could not record relay spend.' "$SANDBOX/err"
+check grep -qxF 'claude-relay: could not record relay run data.' "$SANDBOX/err"
 check equals "$(find "$STATE/spend/b" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" 2
 write_pool
 
@@ -228,7 +235,7 @@ if [ "${1:-}" = 700 ] && [ "${2:-}" = "$LOCKED_SPEND_DIR" ]; then exit 0; fi
 exec "$REAL_CHMOD_SPEND" "$@"
 CHMODSPEND
 "$REAL_CHMOD_SPEND" +x "$SANDBOX/fake/chmod"
-rc=0; relay __record-spend b "$SIDD" "$BUFFER" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
+rc=0; relay __record-run b "$SIDD" "$BUFFER" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
 rm -f "$SANDBOX/fake/chmod"; unset REAL_CHMOD_SPEND LOCKED_SPEND_DIR
 chmod 700 "$STATE/spend/b"
 check test "$rc" -ne 0
@@ -246,18 +253,18 @@ rm -f "$STATE/spend/b/taken.json"
 # Worker failures cannot follow symlinked files or state directories.
 envelope "$BUFFER" '{"type":"result","is_error":false,"total_cost_usd":1}'
 chmod 644 "$BUFFER"
-rc=0; relay __record-spend b "$SIDD" "$BUFFER" 2>/dev/null || rc=$?
+rc=0; relay __record-run b "$SIDD" "$BUFFER" 2>/dev/null || rc=$?
 check test "$rc" -ne 0
 chmod 600 "$BUFFER"
 ln -s "$BUFFER" "$STATE/tasks/out-link"
-rc=0; relay __record-spend b "$SIDD" "$STATE/tasks/out-link" 2>/dev/null || rc=$?
+rc=0; relay __record-run b "$SIDD" "$STATE/tasks/out-link" 2>/dev/null || rc=$?
 check test "$rc" -ne 0
 rm "$STATE/tasks/out-link"
 mkdir -p "$STATE/spend/b"
 for target in "$STATE/forwarded/$SIDD.json" "$STATE/tasks" "$STATE/forwarded" "$STATE/spend/b" "$STATE"; do
   mv "$target" "$SANDBOX/record-real"
   ln -s "$SANDBOX/record-real" "$target"
-  rc=0; relay __record-spend b "$SIDD" "$BUFFER" > "$SANDBOX/out" 2>/dev/null || rc=$?
+  rc=0; relay __record-run b "$SIDD" "$BUFFER" > "$SANDBOX/out" 2>/dev/null || rc=$?
   check test "$rc" -ne 0
   check test ! -s "$SANDBOX/out"
   rm "$target"; mv "$SANDBOX/record-real" "$target"

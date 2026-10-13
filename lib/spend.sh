@@ -11,11 +11,22 @@ prune_spend() (
   find "$STATE_DIR/spend" -mindepth 2 -maxdepth 2 -type f ! -newer "$cutoff" -exec rm -f {} + 2>/dev/null || true
 )
 
+# A stream is one or more JSON objects, each with a string .type. The envelope
+# is its last result with a boolean is_error; the usage event is its last
+# rate_limit_event with an object of windows.
+RUN_JQ='def is_stream: length>0 and all(.[]; type=="object" and (.type|type)=="string");
+  def envelope: map(select(.type=="result" and (.is_error|type)=="boolean")) | last;
+  def usage_event: map(select(.type=="rate_limit_event" and (.rate_limit_info|type)=="object"
+    and (.rate_limit_info.unifiedWindows|type)=="object")) | last;
+  def finite: type=="number" and (isinfinite|not) and (isnan|not)
+    and . < 1.7976931348623157e308 and . > -1.7976931348623157e308;'
+
 # A separate strict worker preserves errexit when forward handles its failure.
-cmd_record_spend() (
+# Each part runs in its own errexit subshell, so one failure cannot skip another.
+cmd_record_run() (
   exec 1>&2
-  [ "$#" -eq 3 ] || die 'Usage: __record-spend <profile> <session> <buffer>'
-  local profile=$1 session=$2 buffer=$3 tasks parent dir record final epoch tries=0 entry totals json
+  [ "$#" -eq 3 ] || die 'Usage: __record-run <profile> <session> <buffer>'
+  local profile=$1 session=$2 buffer=$3 tasks parent part failed=0
   load_pool
   profile_dir "$profile" >/dev/null
   valid_session_id "$session" || die 'Invalid session ID.'
@@ -27,7 +38,19 @@ cmd_record_spend() (
   buffer="$parent/${buffer##*/}"
   [ ! -L "$buffer" ] && [ -f "$buffer" ] && [ -O "$buffer" ] || die 'Buffer must be an owned regular file.'
   [ "$(file_mode "$buffer")" = 600 ] || die 'Output buffer must have mode 600.'
-  jq -se 'length==1 and (.[0]|type)=="object" and .[0].type=="result" and (.[0].is_error|type)=="boolean"' "$buffer" >/dev/null 2>&1 || return 0
+  jq -se "$RUN_JQ"'is_stream' "$buffer" >/dev/null 2>&1 || return 0
+  set +e
+  for part in record_spend record_usage record_rejection; do
+    (set -e; "$part" "$profile" "$session" "$buffer")
+    [ "$?" -eq 0 ] || failed=1
+  done
+  set -e
+  [ "$failed" -eq 0 ]
+)
+
+record_spend() {
+  local profile=$1 session=$2 buffer=$3 dir record final epoch tries=0 entry totals json
+  jq -se "$RUN_JQ"'envelope!=null' "$buffer" >/dev/null || return 0
   [ ! -L "$STATE_DIR/forwarded" ] || die 'Symlink directory rejected.'
   record="$STATE_DIR/forwarded/$session.json"
   [ ! -L "$record" ] || die 'Symlink forwarded record rejected.'
@@ -37,14 +60,14 @@ cmd_record_spend() (
   fi
   epoch=$(jq -nr 'now|floor')
   # Keep the normalized cumulative totals alongside the per-run delta.
-  entry=$(jq -sc --arg p "$profile" --arg s "$session" --argjson at "$epoch" --argjson base "$totals" '
+  entry=$(jq -sc --arg p "$profile" --arg s "$session" --argjson at "$epoch" --argjson base "$totals" "$RUN_JQ"'
     def obj: if type=="object" then . else {} end;
     def num($max): if type=="number" then
       if (isinfinite|not) and (isnan|not) and .>=0 and .<=$max then . else null end
       else null end;
     def tok: num(1e12) // 0;
     def less($b): if $b==null then . elif . >= $b then . - $b else . end;
-    .[0] as $r |
+    envelope as $r |
     {cost_usd:($r.total_cost_usd|num(100000)),
      models:($r.modelUsage | obj | to_entries
        | map(select((.key|test("^[A-Za-z0-9._:\\[\\]-]{1,128}\\z")) and (.value|type)=="object")
@@ -72,7 +95,41 @@ cmd_record_spend() (
   if [ -f "$record" ]; then
     jq -c --argjson t "$(printf '%s' "$entry" | jq -c '.[1]')" 'select(type=="object") | .totals=$t' "$record" | atomic_json "$record"
   fi
-)
+}
+
+# Only numeric windows and the reset time leave the buffer, never text.
+usage_data() {
+  jq -sc --arg p "$1" --arg s "$2" "$RUN_JQ"'
+    usage_event | if .==null then {capture:null,until:null} else
+      .rate_limit_info as $i |
+      (reduce ("five_hour","seven_day") as $k ({}; $i.unifiedWindows[$k] as $w |
+        if ($w|type)=="object" and ($w.utilization|finite) and ($w.resetsAt|finite) and $w.resetsAt>=0 then
+          .[$k]={used_percentage:($w.utilization*100 | if .<0 then 0 elif .>100 then 100 else . end | .*100 | round/100),
+                 resets_at:$w.resetsAt}
+        else . end)) as $rl |
+      {capture:(if $rl=={} then null
+                else {profile:$p,captured_at:now,session_id:$s,model:null,source:"relay",rate_limits:$rl} end),
+       until:(if $i.status=="rejected" and ($i.resetsAt|finite) and $i.resetsAt>now then $i.resetsAt else null end)}
+    end' "$3"
+}
+
+# Stored like a statusline capture, under the child profile and forward's session.
+record_usage() {
+  local data capture
+  data=$(usage_data "$@")
+  capture=$(printf '%s' "$data" | jq -c '.capture // empty')
+  [ -n "$capture" ] || return 0
+  CURRENT_PROFILE=$1
+  store_capture "$capture" >/dev/null
+}
+
+record_rejection() {
+  local data until
+  data=$(usage_data "$@")
+  until=$(printf '%s' "$data" | jq -r '.until // empty')
+  [ -n "$until" ] || return 0
+  mark_exhausted "$1" relay until "$until"
+}
 
 # Relay spend over the last 5 hours; old files are skipped before parsing.
 # errors counts failed runs, which are often the cheapest (e.g. a lost login).

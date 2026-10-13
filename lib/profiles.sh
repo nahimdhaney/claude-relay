@@ -255,10 +255,17 @@ prune_forwarded() {
     fi
   done
 }
+# Never stops reading early: if jq fails, cat drains the rest, so tee never
+# gets SIGPIPE and the buffer is never cut short.
+print_progress() {
+  jq -R -r --unbuffered -L "$RELAY_ROOT/lib" --arg cwd "$1" --arg pwd "$2" \
+    'include "progress"; try (fromjson | progress_lines($cwd; $pwd)) catch empty' 2>/dev/null || true
+  cat > /dev/null
+}
 cmd_forward() (
   local task='' mode=plan cleanup tasks parent model='' resume='' session profile cwd record recorded updated allowed
-  local out status kind has_result is_error subtype
-  local args=(-p --output-format json)
+  local out status kind has_result is_error subtype quiet=false progress
+  local args=(-p --output-format stream-json --verbose)
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --task-file) need_value "$@"; [ -z "$task" ] || die 'Only one task file is allowed.'; task=$(absolute_path "$2"); shift 2 ;;
@@ -272,10 +279,11 @@ cmd_forward() (
         # Checked before any path is built from it.
         valid_session_id "$2" || die 'Invalid --continue session ID: expected a lowercase UUID.'
         resume=$2; shift 2 ;;
+      --quiet) quiet=true; shift ;;
       *) die "Unknown option: $1" ;;
     esac
   done
-  [ -n "$task" ] || die 'Usage: forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID]'
+  [ -n "$task" ] || die 'Usage: forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID] [--quiet]'
   init_config
   # Every configured source is validated, even when a higher one overrides it.
   # Precedence: flag, then environment, then config; empty = profile default.
@@ -283,6 +291,13 @@ cmd_forward() (
     die 'Invalid CLAUDE_RELAY_CHILD_MODEL: use letters, digits and . _ : [ ] - only.'
   [ -z "$CHILD_MODEL" ] || valid_model "$CHILD_MODEL" || die 'Invalid child_model in config: use letters, digits and . _ : [ ] - only.'
   model=${model:-${CLAUDE_RELAY_CHILD_MODEL:-$CHILD_MODEL}}
+  # Progress lines: --quiet, then environment, then config; empty = on.
+  case "${CLAUDE_RELAY_FORWARD_PROGRESS:-}" in ''|true|false|1|0) ;;
+    *) die 'Invalid CLAUDE_RELAY_FORWARD_PROGRESS: use true, false, 1 or 0.' ;; esac
+  case "$FORWARD_PROGRESS" in ''|true|false|1|0) ;;
+    *) die 'Invalid forward_progress in config: use true, false, 1 or 0.' ;; esac
+  progress=${CLAUDE_RELAY_FORWARD_PROGRESS:-${FORWARD_PROGRESS:-true}}
+  if $quiet || [ "$progress" = 0 ]; then progress=false; fi
   [ ! -L "$STATE_DIR" ] && [ ! -L "$STATE_DIR/tasks" ] || die 'Symlink task directory rejected.'
   tasks=$(resolve_dir "$STATE_DIR/tasks") || die 'Task directory does not exist; use task-path.'
   parent=$(resolve_dir "${task%/*}") || die 'Task directory does not exist.'
@@ -344,23 +359,38 @@ cmd_forward() (
   trap 'exit 1' HUP INT TERM
   printf 'claude-relay: profile %s, session %s\n' "$profile" "$session" >&2
   status=0
-  # Capture failure explicitly so errexit does not skip rendering.
-  (launch_claude "$profile" child "${args[@]}") < "$task" > "$out" || status=$?
-  kind=$(jq -sr '
-    if length==1 and (.[0]|type)=="object" and .[0].type=="result" and (.[0].is_error|type)=="boolean"
-    then .[0] | [ "envelope", ((.result|type)=="string"|tostring), (.is_error|tostring),
+  if [ "$progress" = false ]; then
+    # Capture failure explicitly so errexit does not skip rendering.
+    (launch_claude "$profile" child "${args[@]}") < "$task" > "$out" || status=$?
+  else
+    # tee keeps the buffer byte for byte while progress lines go to stderr.
+    # Errexit is off so PIPESTATUS keeps the child's own status.
+    set +e
+    (launch_claude "$profile" child "${args[@]}") < "$task" | tee "$out" | print_progress "$cwd" "$PWD" >&2
+    status=${PIPESTATUS[0]}
+    set -e
+  fi
+  # A single result object is a stream of one, so v0.3.0 envelopes still render.
+  kind=$(jq -sr "$RUN_JQ"'
+    if is_stream|not then "raw"
+    elif envelope==null then "noresult"
+    else envelope | [ "envelope", ((.result|type)=="string"|tostring), (.is_error|tostring),
                   (.subtype | if type=="string" then
                     if test("^[a-z_]+\\z") then . else "unknown" end
                   else "unknown" end) ] | @tsv
-    else "raw" end' "$out" 2>/dev/null) || kind=raw
+    end' "$out" 2>/dev/null) || kind=raw
   case "$kind" in
-    envelope*)
-      "$BASH" "$RELAY_BIN" __record-spend "$profile" "$session" "$out" >&2 ||
-        printf 'claude-relay: could not record relay spend.\n' >&2
-      IFS=$'\t' read -r kind has_result is_error subtype <<< "$kind"
-      if [ "$has_result" = true ]; then jq -sj '.[0].result' "$out"; printf '\n'; fi
-      [ "$is_error" != true ] || printf 'claude-relay: the child reported an error (%s).\n' "$subtype" >&2 ;;
-    *) cat "$out" ;;
+    raw) cat "$out" ;;
+    *)
+      "$BASH" "$RELAY_BIN" __record-run "$profile" "$session" "$out" >&2 ||
+        printf 'claude-relay: could not record relay run data.\n' >&2
+      if [ "$kind" = noresult ]; then
+        printf 'claude-relay: the child ended without a result.\n' >&2
+      else
+        IFS=$'\t' read -r kind has_result is_error subtype <<< "$kind"
+        if [ "$has_result" = true ]; then jq -sj "$RUN_JQ"'envelope.result' "$out"; printf '\n'; fi
+        [ "$is_error" != true ] || printf 'claude-relay: the child reported an error (%s).\n' "$subtype" >&2
+      fi ;;
   esac
   exit "$status"
 )

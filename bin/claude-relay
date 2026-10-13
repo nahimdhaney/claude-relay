@@ -34,6 +34,6 @@ case "$COMMAND" in
   handoff|resume) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/handoff.sh"; "cmd_$COMMAND" "$@" ;;
   statusline|hook) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/handoff.sh"; source "$RELAY_ROOT/lib/hooks.sh"; "cmd_$COMMAND" "$@" ;;
   install|uninstall|doctor) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/install.sh"; "cmd_$COMMAND" "$@" ;;
-  __record-spend) source "$RELAY_ROOT/lib/profiles.sh"; cmd_record_spend "$@" ;;
+  __record-run) source "$RELAY_ROOT/lib/profiles.sh"; source "$RELAY_ROOT/lib/hooks.sh"; cmd_record_run "$@" ;;
   *) die "Unknown subcommand: $COMMAND. Use claude-relay help." ;;
 esac
