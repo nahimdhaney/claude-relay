@@ -1,4 +1,4 @@
-# claude-relay — specification v0.4.0
+# claude-relay — specification v0.4.1
 
 A tool for using multiple Claude Code accounts (profiles with different
 `CLAUDE_CONFIG_DIR` values) without losing work when one runs out of quota:
@@ -404,7 +404,7 @@ its score as below.
   `Note: pool profiles read different CLAUDE.md instructions: <name>=<identity>, ...`,
   in pool order. The note is informational and never makes doctor fail.
 
-`claude-relay --version` reads `VERSION` (0.4.0); `claude-relay help [subcommand]`.
+`claude-relay --version` reads `VERSION` (0.4.1); `claude-relay help [subcommand]`.
 
 ## agents/relay.md
 

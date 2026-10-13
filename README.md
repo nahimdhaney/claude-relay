@@ -50,7 +50,7 @@ You need Git, Bash 3.2+, jq 1.6+, and Claude Code signed in on each account.
 This clones a pinned release and shows a preview without changing anything:
 
 ```bash
-git clone https://github.com/nahimdhaney/claude-relay.git "$HOME/.local/share/claude-relay" && cd "$HOME/.local/share/claude-relay" && git checkout v0.4.0 && ./install.sh --dry-run
+git clone https://github.com/nahimdhaney/claude-relay.git "$HOME/.local/share/claude-relay" && cd "$HOME/.local/share/claude-relay" && git checkout v0.4.1 && ./install.sh --dry-run
 ```
 
 If you have several logins, the preview lists them; pick the ones to use:

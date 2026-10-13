@@ -83,7 +83,7 @@ Hooks and statusline failures return zero with no output to preserve the session
 Pin a release tag or commit SHA, never `main`. Before installing or updating,
 compare `git rev-parse HEAD` with the release commit SHA listed in the
 GitHub release notes for that version. When tags are signed, run
-`git verify-tag v0.4.0` and verify the signer against a trusted maintainer key.
+`git verify-tag v0.4.1` and verify the signer against a trusted maintainer key.
 A matching name alone does not authenticate a tag. Stop if the SHA differs or
 an expected signature cannot be verified.
 
