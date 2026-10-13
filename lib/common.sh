@@ -165,7 +165,7 @@ prune_task_files() (
   cutoff=$(mktemp "$STATE_DIR/.task-prune.XXXXXX")
   trap 'rm -f "$cutoff"' EXIT
   touch -t "$(jq -nr 'now-86400 | strflocaltime("%Y%m%d%H%M.%S")')" "$cutoff"
-  for file in "$STATE_DIR/tasks/"task-*.txt; do
+  for file in "$STATE_DIR/tasks/"task-*.txt "$STATE_DIR/tasks/"out-*; do
     [ -f "$file" ] && [ ! -L "$file" ] && [ -O "$file" ] || continue
     [ "$file" -nt "$cutoff" ] || rm -f "$file"
   done

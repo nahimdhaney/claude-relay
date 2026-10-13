@@ -244,7 +244,8 @@ prune_forwarded() {
 }
 cmd_forward() (
   local task='' mode=plan cleanup tasks parent model='' resume='' session profile cwd record recorded updated allowed
-  local args=(-p --output-format text)
+  local out status kind has_result is_error subtype
+  local args=(-p --output-format json)
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --task-file) need_value "$@"; [ -z "$task" ] || die 'Only one task file is allowed.'; task=$(absolute_path "$2"); shift 2 ;;
@@ -322,11 +323,29 @@ cmd_forward() (
   chmod 600 "$task"
   [ "$(file_mode "$task")" = 600 ] || die 'Task file must have mode 600.'
   printf '%s\n' "$updated" | atomic_json "$record"
+  out=$(mktemp "$STATE_DIR/tasks/out-XXXXXX") || die 'Could not create the output buffer.'
+  [ "$(file_mode "$out")" = 600 ] || { rm -f "$out"; die 'Output buffer must have mode 600.'; }
   # Cleanup begins only after all validation succeeds. Refusals retain input.
-  printf -v cleanup 'rm -f %q' "$task"
+  printf -v cleanup 'rm -f %q %q' "$task" "$out"
   trap "$cleanup" EXIT
   trap 'exit 1' HUP INT TERM
   printf 'claude-relay: profile %s, session %s\n' "$profile" "$session" >&2
-  # The parent retains its cleanup trap while the child execs Claude.
-  (launch_claude "$profile" child "${args[@]}") < "$task"
+  status=0
+  # Capture failure explicitly so errexit does not skip rendering.
+  (launch_claude "$profile" child "${args[@]}") < "$task" > "$out" || status=$?
+  kind=$(jq -sr '
+    if length==1 and (.[0]|type)=="object" and .[0].type=="result" and (.[0].is_error|type)=="boolean"
+    then .[0] | [ "envelope", ((.result|type)=="string"|tostring), (.is_error|tostring),
+                  (.subtype | if type=="string" then
+                    if test("^[a-z_]+\\z") then . else "unknown" end
+                  else "unknown" end) ] | @tsv
+    else "raw" end' "$out" 2>/dev/null) || kind=raw
+  case "$kind" in
+    envelope*)
+      IFS=$'\t' read -r kind has_result is_error subtype <<< "$kind"
+      if [ "$has_result" = true ]; then jq -sj '.[0].result' "$out"; printf '\n'; fi
+      [ "$is_error" != true ] || printf 'claude-relay: the child reported an error (%s).\n' "$subtype" >&2 ;;
+    *) cat "$out" ;;
+  esac
+  exit "$status"
 )

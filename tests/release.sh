@@ -75,7 +75,7 @@ export SANDBOX
 ln -s "$CLI" "$SANDBOX/fake/claude-relay"
 (cd "$SANDBOX" && "$BASH" "$SANDBOX/forwarder.sh") > "$SANDBOX/out" 2> "$SANDBOX/err"
 check cmp -s "$SANDBOX/prompt" "$FAKE_STDIN"
-check json_is "$FAKE_LOG" '.depth=="1" and .args[0:4]==["-p","--output-format","text","--session-id"] and .args[5:]==["--permission-mode","plan"]'
+check json_is "$FAKE_LOG" '.depth=="1" and .args[0:4]==["-p","--output-format","json","--session-id"] and .args[5:]==["--permission-mode","plan"]'
 check test ! -e "$SANDBOX/SHOULD_NOT_EXIST"
 check test ! -e "$SANDBOX/ALSO_NOT"
 check equals "$(find "$STATE/tasks" -name 'task-*.txt' | wc -l | tr -d ' ')" 0

@@ -16,6 +16,17 @@ cat > "$CLAUDE_RELAY_CLAUDE_BIN" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 jq -n --arg depth "${CLAUDE_RELAY_DEPTH-unset}" --arg cwd "$PWD" --arg config "$CLAUDE_CONFIG_DIR" --arg nested "${CLAUDECODE-}" --arg child "${CLAUDE_CODE_CHILD_SESSION-unset}" --arg auth "${ANTHROPIC_API_KEY-}${ANTHROPIC_AUTH_TOKEN-}${CLAUDE_CODE_OAUTH_TOKEN-}${CLAUDE_CODE_USE_BEDROCK-}${CLAUDE_CODE_USE_VERTEX-}${CLAUDE_CODE_USE_FOUNDRY-}${ANTHROPIC_BASE_URL-}" --args '{depth:$depth,cwd:$cwd,config:$config,nested:$nested,child:$child,auth:$auth,args:$ARGS.positional}' -- "$@" > "$FAKE_LOG"
+if [ -n "${FAKE_CLAUDE_OUTPUT:-}" ]; then
+  if [ -n "${FAKE_CLAUDE_BUFFER_MODE:-}" ]; then
+    for buffer in "$XDG_STATE_HOME/claude-relay/tasks/"out-*; do
+      [ -f "$buffer" ] && [ ! -L "$buffer" ] || continue
+      LC_ALL=C ls -ld "$buffer" | cut -c1-10 > "$FAKE_CLAUDE_BUFFER_MODE"
+    done
+  fi
+  [ "${FAKE_CLAUDE_SIGNAL:-}" != TERM ] || kill -TERM $$
+  cat "$FAKE_CLAUDE_OUTPUT"
+  exit "${FAKE_CLAUDE_STATUS:-0}"
+fi
 FAKE
 # Never invoke a real desktop notifier from this suite.
 for notifier in osascript notify-send; do
@@ -308,6 +319,8 @@ source "$ROOT/tests/security-hardening.sh"
 source "$ROOT/tests/forward-and-preview.sh"
 # shellcheck source=tests/v022.sh
 source "$ROOT/tests/v022.sh"
+# shellcheck source=tests/spend-ledger.sh
+source "$ROOT/tests/spend-ledger.sh"
 # Report timings for the common, non-warning path without imposing a flaky CI limit.
 usage a 20
 for operation in statusline guard; do
