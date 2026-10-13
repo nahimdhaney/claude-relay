@@ -77,7 +77,8 @@ check equals "$(sed -n 2p "$SANDBOX/actual41")" '  · Read /tmp/x'
 check test "$(LC_ALL=C grep -c "$(printf '\033')" "$SANDBOX/err" || true)" -eq 0
 check equals "$(sed -n 3p "$SANDBOX/actual41" | jq -R length)" 120
 check equals "$(sed -n 3p "$SANDBOX/actual41" | jq -R '.[-1:]' -r)" '…'
-check equals "$(sed -n 3p "$SANDBOX/actual41" | cut -c1-12)" '  · Bash yyy'
+# GNU cut -c counts bytes, not characters; jq counts characters on every platform.
+check equals "$(sed -n 3p "$SANDBOX/actual41" | jq -Rr '.[0:12]')" '  · Bash yyy'
 
 # Opt-out: --quiet, the environment and config; precedence flag > env > config.
 cp "$SANDBOX/stream41.jsonl" "$FAKE_CLAUDE_OUTPUT"
