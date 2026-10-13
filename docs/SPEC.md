@@ -91,8 +91,8 @@ Live observations from 2026-10-12 with Claude Code 2.1.296 are included below.
   the complete `.claude.json`). Only read `oauthAccount.emailAddress` and
   `oauthAccount.organizationName` from `.claude.json` for `status` and `detect`.
 - Files containing transcripts or handoffs: `umask 077`, mode 600/700.
-- Atomic writes (temporary file + `mv`, or an exclusive hard link for ledger
-  records).
+- Atomic writes (temporary file + `mv`; ledger records use an exclusive
+  `noclobber` create instead).
 - No hook or statusline may break the session: on any error, exit 0 with no
   output. Require one JSON object before side effects or wrapper execution.
 - Never evaluate event/transcript/account data as shell code. The saved
@@ -208,7 +208,8 @@ its score as below.
   windows; no active windows = `unknown_score`. Exclude profiles with scores
   >= `handoff_at` and profiles whose config_dir does not exist. Lowest score
   wins. Among profiles tied for that score, compare the last 5 hours of relay
-  spend. If all tied profiles have complete costs, prefer the least cost,
+  spend. Fewer failed runs (`errors`) come first. Then, if all tied profiles
+  have complete costs, prefer the least cost,
   then the fewest runs. If any has an unknown cost, prefer the fewest runs,
   then the least cost. Remaining ties go to pool order. JSON includes
   `relay_spend_5h`. No candidates → exit 3 and a message on stderr.
@@ -478,8 +479,9 @@ Symlinked files and directories are never followed.
 Each envelope creates one record under
 `~/.local/state/claude-relay/spend/<profile>/<session>-<epoch>-<random>.json`
 (or the configured XDG state directory). Directories are 700 and files 600.
-The random suffix comes from `mktemp`. A hard link publishes the file without
-overwriting an existing name; name allocation allows up to five attempts.
+The record is built and validated first, then written with `noclobber`
+(`O_EXCL`), which never overwrites an existing name and works on filesystems
+without hard links. A taken name gets a new random suffix, up to five attempts.
 
 ```json
 {"profile":"personal","session_id":"00000000-0000-4000-8000-000000000000","at":1791842414,"cost_usd":0.0029,"is_error":false,"models":{"claude-haiku-5-5":{"in":2,"out":3,"cache_read":15327,"cache_write":13571}}}
@@ -519,17 +521,19 @@ rejects symlinks and never writes stdout. If it fails, `forward` prints
 `claude-relay: could not record relay spend.` on stderr. The result and child
 exit status stay unchanged.
 
-`relay_spend <profile>` returns `{"cost_usd":N,"runs":N,"complete":B}` for
+`relay_spend <profile>` returns `{"cost_usd":N,"runs":N,"complete":B,"errors":N}` for
 the rolling last 5 hours. It preselects regular files by mtime, with a 60-second
 margin, then reads them in one jq call. If parsing fails, it reads each file
 separately so a damaged file cannot hide valid ones. Symlinked files are
 skipped. A missing or symlinked ledger directory gives zero cost, zero runs
-and `complete:true`.
+`complete:true` and zero errors.
 
 A record counts only if it is an object with the matching profile, a finite
 `at` from `now-18000` through `now+60`, and a finite nonnegative cost or `null`.
 Sum the non-null costs and count all valid records. `complete` is false if
-any counted record has a null cost. Missing costs from older Claude Code
+any counted record has a null cost. `errors` counts records with
+`is_error:true`: failed runs are often the cheapest (a lost login fails at no
+cost), so they must not make a broken profile look attractive. Missing costs from older Claude Code
 versions still count as runs. Both `status --json` and `pick --json` expose
 this object as `relay_spend_5h`. Cost is a relative weight between accounts,
 not a bill: subscription plans do not charge per run.
@@ -575,7 +579,7 @@ Minimum cases:
 - install: no refreshInterval; migration is backed up and idempotent;
   uninstall restores unrelated original statusline settings.
 - pick: lowest score wins; no active windows = 50; >= 97 is
-  excluded; `--exclude`; ties by relay cost and runs, then pool order;
+  excluded; `--exclude`; ties by failed runs, relay cost and runs, then pool order;
   incomplete costs compare runs first; no candidates → exit 3.
 - guard: < 90 no output; 90 → soft warning once per session; 97 → strong warning
   with the handoff path; valid JSON with the correct `hookEventName`;

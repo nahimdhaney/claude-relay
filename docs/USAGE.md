@@ -132,9 +132,10 @@ profile selection allows a manual choice even when the profile does not meet
 those filters.
 
 `status --json` and `pick --json` include
-`"relay_spend_5h":{"cost_usd":0.12,"runs":3,"complete":true}`. The window
-rolls over the last 5 hours. `complete` is false if any counted run has no
-valid cost. With no runs, the values are 0, 0 and true. `cost_usd` is a relative
+`"relay_spend_5h":{"cost_usd":0.12,"runs":3,"complete":true,"errors":0}`. The
+window rolls over the last 5 hours. `complete` is false if any counted run has
+no valid cost. `errors` counts runs whose child reported an error; among tied
+profiles, fewer errors win first. With no runs, the values are 0, 0, true and 0. `cost_usd` is a relative
 weight between accounts, not a bill: subscription plans do not charge per run.
 Relay spend only breaks score ties. An unknown profile at 50 still beats a
 measured 60, even if it has spent more. The text `status` table is unchanged.

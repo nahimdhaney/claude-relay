@@ -9,8 +9,8 @@ rm -rf "$STATE/spend" "$STATE/usage" "$STATE/exhausted" "$STATE/warned"
 usage a 98
 spend_rec() {
   mkdir -p "$STATE/spend/$1"; chmod 700 "$STATE/spend" "$STATE/spend/$1"
-  jq -n --arg p "$1" --argjson c "$2" --argjson age "$3" \
-    '{profile:$p,session_id:"00000000-0000-4000-8000-000000000000",at:(now-$age|floor),cost_usd:$c,is_error:false,models:{}}' \
+  jq -n --arg p "$1" --argjson c "$2" --argjson age "$3" --argjson e "${4:-false}" \
+    '{profile:$p,session_id:"00000000-0000-4000-8000-000000000000",at:(now-$age|floor),cost_usd:$c,is_error:$e,models:{}}' \
     > "$STATE/spend/$1/r-$RANDOM$RANDOM.json"
 }
 # Complete costs compare cost, then runs, then pool order.
@@ -28,6 +28,14 @@ spend_rec c 0 60
 check equals "$(relay pick --exclude a)" b
 rm -rf "$STATE/spend"
 check equals "$(relay pick --exclude a)" b
+# A profile whose runs fail (cheap, e.g. a lost login) loses ties to one that works.
+spend_rec b 0 60 true; spend_rec c 0.5 60
+check equals "$(relay pick --exclude a)" c
+relay status --json > "$SANDBOX/st"
+check json_is "$SANDBOX/st" '.[1].relay_spend_5h.errors==1 and .[2].relay_spend_5h.errors==0'
+spend_rec c 0.5 60 true; spend_rec c 0.5 60 true
+check equals "$(relay pick --exclude a)" b
+rm -rf "$STATE/spend"
 # Spend never changes the score, and only lowest-score ties affect ordering.
 usage c 30; spend_rec c 5 60
 check equals "$(relay pick --exclude a)" c
@@ -41,17 +49,17 @@ usage a 98
 # Both JSON commands expose the aggregate; the text table stays unchanged.
 relay status | cut -f 1-6,8- > "$SANDBOX/table-before"
 relay pick --exclude a --json > "$SANDBOX/pk"
-check json_is "$SANDBOX/pk" '.profile=="b" and .relay_spend_5h=={cost_usd:1,runs:2,complete:true}'
+check json_is "$SANDBOX/pk" '.profile=="b" and .relay_spend_5h=={cost_usd:1,runs:2,complete:true,errors:0}'
 rm -rf "$STATE/spend"
 relay status | cut -f 1-6,8- > "$SANDBOX/table-after"
 check cmp -s "$SANDBOX/table-before" "$SANDBOX/table-after"
 spend_rec b 0.2 60
 relay status --json > "$SANDBOX/st"
-check json_is "$SANDBOX/st" '.[1].relay_spend_5h=={cost_usd:0.2,runs:1,complete:true} and .[2].relay_spend_5h=={cost_usd:0,runs:0,complete:true}'
+check json_is "$SANDBOX/st" '.[1].relay_spend_5h=={cost_usd:0.2,runs:1,complete:true,errors:0} and .[2].relay_spend_5h=={cost_usd:0,runs:0,complete:true,errors:0}'
 # Stored costs have no upper bound; writer normalization is a separate rule.
 spend_rec b 100001 60
 relay status --json > "$SANDBOX/st"
-check json_is "$SANDBOX/st" '.[1].relay_spend_5h=={cost_usd:100001.2,runs:2,complete:true}'
+check json_is "$SANDBOX/st" '.[1].relay_spend_5h=={cost_usd:100001.2,runs:2,complete:true,errors:0}'
 rm -rf "$STATE/spend"; spend_rec b 0.2 60
 # Bad timestamps, costs, shapes and files do not hide a valid record.
 for record in \
@@ -78,14 +86,14 @@ printf 'garbage' >> "$STATE/spend/b/trailing.json"
 cp "$SANDBOX/outside.json" "$STATE/spend/b/old.json"
 touch -t 200001010000 "$STATE/spend/b/old.json"
 relay status --json > "$SANDBOX/st"
-check json_is "$SANDBOX/st" '.[1].relay_spend_5h=={cost_usd:0.2,runs:1,complete:true}'
+check json_is "$SANDBOX/st" '.[1].relay_spend_5h=={cost_usd:0.2,runs:1,complete:true,errors:0}'
 spend_rec b null 60
 relay status --json > "$SANDBOX/st"
-check json_is "$SANDBOX/st" '.[1].relay_spend_5h=={cost_usd:0.2,runs:2,complete:false}'
+check json_is "$SANDBOX/st" '.[1].relay_spend_5h=={cost_usd:0.2,runs:2,complete:false,errors:0}'
 for target in "$STATE/spend/b" "$STATE/spend" "$STATE"; do
   mv "$target" "$SANDBOX/spend-real"; ln -s "$SANDBOX/spend-real" "$target"
   relay status --json > "$SANDBOX/st"
-  check json_is "$SANDBOX/st" 'all(.[]; .relay_spend_5h=={cost_usd:0,runs:0,complete:true})'
+  check json_is "$SANDBOX/st" 'all(.[]; .relay_spend_5h=={cost_usd:0,runs:0,complete:true,errors:0})'
   rm "$target"; mv "$SANDBOX/spend-real" "$target"
 done
 # Equal-cost forwarded runs spread across accounts with no measurements.

@@ -15,7 +15,7 @@ prune_spend() (
 cmd_record_spend() (
   exec 1>&2
   [ "$#" -eq 3 ] || die 'Usage: __record-spend <profile> <session> <buffer>'
-  local profile=$1 session=$2 buffer=$3 tasks parent dir record tmp='' final epoch tries=0 entry totals
+  local profile=$1 session=$2 buffer=$3 tasks parent dir record final epoch tries=0 entry totals json
   load_pool
   profile_dir "$profile" >/dev/null
   valid_session_id "$session" || die 'Invalid session ID.'
@@ -61,26 +61,24 @@ cmd_record_spend() (
   dir="$STATE_DIR/spend/$profile"
   private_dir "$dir"
   prune_spend
-  trap 'rm -f "$tmp"' EXIT
+  json=$(printf '%s' "$entry" | jq -c '.[0]')
+  # noclobber opens with O_EXCL: a record is never overwritten, on any filesystem.
   while :; do
-    tmp=$(mktemp "$dir/.tmp.XXXXXX")
-    printf '%s' "$entry" | jq -c '.[0]' > "$tmp"
-    jq -e 'type=="object"' "$tmp" >/dev/null
-    chmod 600 "$tmp"
-    final="$dir/$session-$epoch-${tmp##*.}.json"
-    if [ ! -e "$final" ] && [ ! -L "$final" ] && ln "$tmp" "$final" 2>/dev/null; then break; fi
-    rm -f "$tmp"
+    final="$dir/$session-$epoch-$RANDOM$RANDOM.json"
+    if ( set -C; printf '%s\n' "$json" > "$final" ) 2>/dev/null; then break; fi
     tries=$((tries+1)); [ "$tries" -lt 5 ] || die 'Could not allocate a ledger file name.'
   done
+  chmod 600 "$final"
   if [ -f "$record" ]; then
     jq -c --argjson t "$(printf '%s' "$entry" | jq -c '.[1]')" 'select(type=="object") | .totals=$t' "$record" | atomic_json "$record"
   fi
 )
 
 # Relay spend over the last 5 hours; old files are skipped before parsing.
+# errors counts failed runs, which are often the cheapest (e.g. a lost login).
 relay_spend() (
   local profile=$1 dir="$STATE_DIR/spend/$1" cutoff file files=() count=0 data
-  local zero='{"cost_usd":0,"runs":0,"complete":true}'
+  local zero='{"cost_usd":0,"runs":0,"complete":true,"errors":0}'
   local filter='def finite: if type=="number" then (isinfinite|not) and (isnan|not) else false end;
     def ok: type=="object" and .profile==$p and (.at|finite) and .at>=now-$w and .at<=now+60
       and (.cost_usd==null or ((.cost_usd|finite) and .cost_usd>=0));'
@@ -101,5 +99,5 @@ relay_spend() (
       jq -cs --arg p "$profile" --argjson w "$SPEND_WINDOW" "$filter"'.[]|select(ok)' "$file" 2>/dev/null || true
     done | jq -cs .)
   fi
-  printf '%s' "$data" | jq -c '{cost_usd:(map(.cost_usd // 0)|add // 0),runs:length,complete:all(.[]; .cost_usd!=null)}'
+  printf '%s' "$data" | jq -c '{cost_usd:(map(.cost_usd // 0)|add // 0),runs:length,complete:all(.[]; .cost_usd!=null),errors:map(select(.is_error==true))|length}'
 )

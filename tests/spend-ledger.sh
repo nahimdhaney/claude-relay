@@ -215,24 +215,33 @@ check grep -qxF 'claude-relay: could not record relay spend.' "$SANDBOX/err"
 check equals "$(find "$STATE/spend/b" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" 2
 write_pool
 
-# Failed links retry five fresh names, leave no staging files, and preserve totals.
+# An unwritable ledger directory gives up after five names, writes nothing and preserves totals.
 envelope "$BUFFER" '{"type":"result","is_error":false,"total_cost_usd":9}'
 cp "$STATE/forwarded/$SIDD.json" "$SANDBOX/totals-before"
-export SPEND_LINK_LOG="$SANDBOX/link-attempts"
-cat > "$SANDBOX/fake/ln" <<'LINK'
+before=$(find "$STATE/spend/b" -type f | wc -l | tr -d ' ')
+chmod 500 "$STATE/spend/b"
+# private_dir would restore 700; this chmod leaves only that directory read-only.
+export REAL_CHMOD_SPEND=$(command -v chmod) LOCKED_SPEND_DIR="$STATE/spend/b"
+cat > "$SANDBOX/fake/chmod" <<'CHMODSPEND'
 #!/usr/bin/env bash
-printf '%s\n' "$2" >> "$SPEND_LINK_LOG"
-exit 1
-LINK
-chmod +x "$SANDBOX/fake/ln"
+if [ "${1:-}" = 700 ] && [ "${2:-}" = "$LOCKED_SPEND_DIR" ]; then exit 0; fi
+exec "$REAL_CHMOD_SPEND" "$@"
+CHMODSPEND
+"$REAL_CHMOD_SPEND" +x "$SANDBOX/fake/chmod"
 rc=0; relay __record-spend b "$SIDD" "$BUFFER" > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
-rm "$SANDBOX/fake/ln"
+rm -f "$SANDBOX/fake/chmod"; unset REAL_CHMOD_SPEND LOCKED_SPEND_DIR
+chmod 700 "$STATE/spend/b"
 check test "$rc" -ne 0
 check test ! -s "$SANDBOX/out"
-check equals "$(sort -u "$SPEND_LINK_LOG" | wc -l | tr -d ' ')" 5
-check equals "$(find "$STATE/spend" -name '.tmp.*' | wc -l | tr -d ' ')" 0
+check grep -q 'Could not allocate a ledger file name' "$SANDBOX/err"
+check equals "$(find "$STATE/spend/b" -type f | wc -l | tr -d ' ')" "$before"
 check cmp -s "$STATE/forwarded/$SIDD.json" "$SANDBOX/totals-before"
-unset SPEND_LINK_LOG
+# An existing name is never overwritten: noclobber refuses it.
+printf 'keep\n' > "$SANDBOX/existing"; cp "$SANDBOX/existing" "$STATE/spend/b/taken.json"
+rc=0; ( set -C; printf 'x\n' > "$STATE/spend/b/taken.json" ) 2>/dev/null || rc=$?
+check test "$rc" -ne 0
+check cmp -s "$STATE/spend/b/taken.json" "$SANDBOX/existing"
+rm -f "$STATE/spend/b/taken.json"
 
 # Worker failures cannot follow symlinked files or state directories.
 envelope "$BUFFER" '{"type":"result","is_error":false,"total_cost_usd":1}'

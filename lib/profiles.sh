@@ -165,12 +165,13 @@ choose_profile() {
     cands=$(jq -cn --argjson c "$cands" --arg n "$name" --argjson m "$m" --argjson s "$spend" --argjson i "$i" \
       '$c+[{name:$n,i:$i,m:($m+{relay_spend_5h:$s})}]')
   done
-  # Compare spend only among lowest-score ties; missing costs put runs first.
+  # Compare spend only among lowest-score ties: fewer failed runs first, then
+  # cost and runs (runs first when a cost is missing), then pool order.
   picked=$(printf '%s' "$cands" | jq -c '
     if length==0 then empty else
       (map(.m.score)|min) as $low | map(select(.m.score==$low)) as $t |
       ($t|all(.[]; .m.relay_spend_5h.complete)) as $costs |
-      $t | min_by(.m.relay_spend_5h as $s | if $costs then [$s.cost_usd,$s.runs,.i] else [$s.runs,$s.cost_usd,.i] end)
+      $t | min_by(.m.relay_spend_5h as $s | if $costs then [$s.errors,$s.cost_usd,$s.runs,.i] else [$s.errors,$s.runs,$s.cost_usd,.i] end)
     end')
   [ -n "$picked" ] || { printf 'claude-relay: no eligible profiles.\n' >&2; return 3; }
   PICKED=$(printf '%s' "$picked" | jq -r .name)
