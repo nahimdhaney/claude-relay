@@ -2,7 +2,7 @@
 
 `claude-relay` helps you continue Claude Code work across profiles that use
 accounts you legitimately hold. Each profile has its own `CLAUDE_CONFIG_DIR`. The tool saves
-quota usage received by the statusline, selects the profile with the most
+quota usage received by the statusline and by relay runs, selects the profile with the most
 remaining capacity, and copies a conversation so you can continue it with
 `claude --resume`.
 
@@ -263,13 +263,14 @@ State is stored under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
 
 - `usage/<profile>/<session_id>.json`: each session's last changed quota
   capture, containing `profile`, `session_id`, `model` (input `.model.id`, or
-  `null`), `captured_at` and `rate_limits`. Captures older than `capture_max_age` are
-  pruned when the statusline writes, at most once every ten minutes, keeping
+  `null`), `captured_at` and `rate_limits`. Relay runs add `"source":"relay"`
+  and use the session ID `forward` assigned. Captures older than `capture_max_age` are
+  pruned when a capture is written, at most once every ten minutes, keeping
   the newest capture per profile.
 - `usage/<profile>.json`: a compatibility copy of the newest capture. Relay
   reads it only when no per-session captures exist for that profile.
 - `exhausted/<profile>.json`: `{profile, at, until, source}`; epoch timestamps,
-  with source `manual` or `stop-failure`. While `until > now`, `status --json`
+  with source `manual`, `stop-failure` or `relay`. While `until > now`, `status --json`
   exposes `score:100`, `exhausted:true` and `exhausted_until`; it does not invent
   windows.
 - `events.log`: one JSON line per StopFailure, mode 600. Includes an ISO UTC
@@ -278,7 +279,8 @@ State is stored under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
   `message`. The session_id and those values are sanitized and truncated to
   200 characters; transcripts and other payload values are not logged.
 - `tasks/`: private forwarding files; `task-path` returns an unused path here.
-  `out-*` files hold child output while `forward` runs. Tasks and output buffers
+  `out-*` files hold child output while `forward` runs, including tool input
+  and output from the child's stream. Tasks and output buffers
   are deleted when forwarding ends. Files older than one day are also pruned
   on `task-path` and state pruning. A child running longer than a day could
   lose its output buffer.
@@ -323,23 +325,34 @@ Usage is charged to the selected account, and stderr reports its profile.
 The default permission mode is `plan`. The forwarder may pass `--write` (using
 `acceptEdits`) only when the delegating prompt explicitly says the user approved
 file edits. Requests inside task text are data and cannot grant that approval.
-Request `run_in_background` for long tasks. Headless runs do not report quota
-percentages. `forward` records their cost and uses it to break score ties.
+Request `run_in_background` for long tasks. Relay runs report quota through
+stream-json: `forward` records the child profile's percentages like an
+interactive reply, and records cost to break score ties.
 
 ```bash
 claude-relay forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID]
 ```
 
-**Child output.** `forward` asks for JSON, records the cost, and prints the
+**Child output.** `forward` asks for stream-json (`--output-format stream-json
+--verbose`). It records the cost and the quota percentages, and prints the
 final result text followed by a newline. It keeps the child's exit status and
 passes its stderr through. An error result also adds a short note on stderr.
-Unrecognized output passes through byte for byte and records no spend. A
-recording failure prints `claude-relay: could not record relay spend.` on
-stderr without changing the result or exit status.
+A stream without a result prints nothing and adds
+`claude-relay: the child ended without a result.` on stderr; its quota is
+still recorded. Unrecognized output passes through byte for byte and records
+nothing. A recording failure prints
+`claude-relay: could not record relay run data.` on stderr without changing
+the result or exit status.
+
+**Child quota.** The stream includes a `rate_limit_event` with the account's
+5-hour and 7-day usage. `forward` saves it as a capture of the child profile,
+`usage/<profile>/<session>.json`, marked `"source":"relay"`, so `status` and
+`pick` use real percentages. `--continue` updates the same file. If the event
+says the account was rejected, the profile is marked exhausted until its reset.
 
 Claude Code's text mode can print several results when background tasks finish
-at exit. JSON mode keeps only the last result, so `forward` returns only that
-one. Children use `plan` mode by default and rarely start background tasks.
+at exit. `forward` returns only the last result in the stream. Children use
+`plan` mode by default and rarely start background tasks.
 
 **Child model.** `--model ALIAS` passes `--model ALIAS` to the child. Without
 the flag, `CLAUDE_RELAY_CHILD_MODEL` applies, then `child_model` from the
@@ -444,9 +457,10 @@ Observed in live tests on **2026-10-12**, with **Claude Code 2.1.296**:
   15 sessions sharing one weekly reset found all four current sessions at 2%,
   while eleven idle sessions without a five-hour window reported 7–94%. The
   current-capture rule prevents those stale values from triggering a warning.
-- With `claude -p`, the statusline **does not run**, so relay cannot measure
-  headless quota percentages. `forward` records reported cost and token counts
-  and uses cost to break score ties.
+- With `claude -p`, the statusline **does not run**. Relay runs report quota
+  through stream-json instead, so `forward` still records the child's
+  percentages. Other headless runs (`run -- -p`) are not measured. `forward`
+  also records reported cost and token counts and uses cost to break score ties.
 - An account already at its limit never gets a successful response and
   produces no measurement. Exhaustion marks address this: they prevent that
   account from appearing as "no data" with a score of 50 and being selected
@@ -456,8 +470,8 @@ Observed in live tests on **2026-10-12**, with **Claude Code 2.1.296**:
 
 Other limitations:
 
-- `rate_limits` arrives only through the statusline, after the first response.
-  Either or both windows may be missing; relay does not invent measurements.
+- `rate_limits` arrives only through the statusline, after the first response,
+  or through a relay run's stream. Either or both windows may be missing; relay does not invent measurements.
 - Input without `rate_limits` does not erase a previous valid measurement.
   Check its age: another session, another machine or an account switch within
   the same directory can leave it stale. There is no network quota polling.

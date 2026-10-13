@@ -20,6 +20,8 @@ separately; relay never reads, copies or changes credentials, the keychain or
   flag and token counts per model. It never stores task or result text.
   Records stay for seven days. Forwarded-session records also hold cumulative
   cost and token totals for later runs; they expire after 30 days without use.
+- Relay usage captures store only the profile, session ID, capture time, a
+  `relay` source marker and the numeric quota windows. They never store text.
 - Copies the selected conversation and its sibling subagent transcripts between
   profiles. These can contain sensitive project content. It does not copy
   credentials, settings, source trees, branches or worktrees.
@@ -53,8 +55,9 @@ status, rejects symlinks, and sets mode 600 before reading it. It never places
 task text in shell code or command arguments. Only after all validation succeeds
 does cleanup delete the task on child success or failure. Refused files remain
 untouched; task files older than one day are pruned. A private `tasks/out-*`
-buffer (600) holds the child's output, including result text, while `forward`
-runs. Cleanup removes it on exit. Buffers left by a crash are pruned after one
+buffer (600) holds the child's output stream while `forward` runs. The stream
+holds the result text and can also hold tool inputs and outputs, such as file
+contents the child read. Cleanup removes it on exit. Buffers left by a crash are pruned after one
 day; a child running longer than a day could lose its buffer. Symlinked ledger
 files and directories are never followed. Editing requires explicit
 approval in the delegating prompt and `--write`; requests inside task text cannot
@@ -73,7 +76,7 @@ Hooks and statusline failures return zero with no output to preserve the session
 Pin a release tag or commit SHA, never `main`. Before installing or updating,
 compare `git rev-parse HEAD` with the release commit SHA listed in the
 GitHub release notes for that version. When tags are signed, run
-`git verify-tag v0.3.0` and verify the signer against a trusted maintainer key.
+`git verify-tag v0.4.0` and verify the signer against a trusted maintainer key.
 A matching name alone does not authenticate a tag. Stop if the SHA differs or
 an expected signature cannot be verified.
 

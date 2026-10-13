@@ -258,7 +258,7 @@ prune_forwarded() {
 cmd_forward() (
   local task='' mode=plan cleanup tasks parent model='' resume='' session profile cwd record recorded updated allowed
   local out status kind has_result is_error subtype
-  local args=(-p --output-format json)
+  local args=(-p --output-format stream-json --verbose)
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --task-file) need_value "$@"; [ -z "$task" ] || die 'Only one task file is allowed.'; task=$(absolute_path "$2"); shift 2 ;;
@@ -346,21 +346,27 @@ cmd_forward() (
   status=0
   # Capture failure explicitly so errexit does not skip rendering.
   (launch_claude "$profile" child "${args[@]}") < "$task" > "$out" || status=$?
-  kind=$(jq -sr '
-    if length==1 and (.[0]|type)=="object" and .[0].type=="result" and (.[0].is_error|type)=="boolean"
-    then .[0] | [ "envelope", ((.result|type)=="string"|tostring), (.is_error|tostring),
+  # A single result object is a stream of one, so v0.3.0 envelopes still render.
+  kind=$(jq -sr "$RUN_JQ"'
+    if is_stream|not then "raw"
+    elif envelope==null then "noresult"
+    else envelope | [ "envelope", ((.result|type)=="string"|tostring), (.is_error|tostring),
                   (.subtype | if type=="string" then
                     if test("^[a-z_]+\\z") then . else "unknown" end
                   else "unknown" end) ] | @tsv
-    else "raw" end' "$out" 2>/dev/null) || kind=raw
+    end' "$out" 2>/dev/null) || kind=raw
   case "$kind" in
-    envelope*)
-      "$BASH" "$RELAY_BIN" __record-spend "$profile" "$session" "$out" >&2 ||
-        printf 'claude-relay: could not record relay spend.\n' >&2
-      IFS=$'\t' read -r kind has_result is_error subtype <<< "$kind"
-      if [ "$has_result" = true ]; then jq -sj '.[0].result' "$out"; printf '\n'; fi
-      [ "$is_error" != true ] || printf 'claude-relay: the child reported an error (%s).\n' "$subtype" >&2 ;;
-    *) cat "$out" ;;
+    raw) cat "$out" ;;
+    *)
+      "$BASH" "$RELAY_BIN" __record-run "$profile" "$session" "$out" >&2 ||
+        printf 'claude-relay: could not record relay run data.\n' >&2
+      if [ "$kind" = noresult ]; then
+        printf 'claude-relay: the child ended without a result.\n' >&2
+      else
+        IFS=$'\t' read -r kind has_result is_error subtype <<< "$kind"
+        if [ "$has_result" = true ]; then jq -sj "$RUN_JQ"'envelope.result' "$out"; printf '\n'; fi
+        [ "$is_error" != true ] || printf 'claude-relay: the child reported an error (%s).\n' "$subtype" >&2
+      fi ;;
   esac
   exit "$status"
 )

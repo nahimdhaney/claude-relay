@@ -32,8 +32,8 @@ count22() { find "$1" -type f -name "$2" | wc -l | tr -d ' '; }
 # 1: A new child gets a known random session ID and a private record.
 forward22 "$WORK22"
 check equals "$rc" 0
-check log22 '.args[0:4]==["-p","--output-format","json","--session-id"] and (.args[4]|test($re)) and .args[5:]==["--permission-mode","plan"] and (.config|endswith("/b"))'
-SID22=$(jq -r '.args[4]' "$FAKE_LOG")
+check log22 '.args[0:5]==["-p","--output-format","stream-json","--verbose","--session-id"] and (.args[5]|test($re)) and .args[6:]==["--permission-mode","plan"] and (.config|endswith("/b"))'
+SID22=$(jq -r '.args[5]' "$FAKE_LOG")
 check grep -qxF "claude-relay: profile b, session $SID22" "$SANDBOX/err"
 check test ! -e "$TASK22"
 check record22 '.session_id==$sid and .profile=="b" and .cwd==$cwd and (.created_at|type)=="number" and .last_used_at==.created_at and .created_at>now-60 and .created_at<=now'
@@ -41,7 +41,7 @@ check equals "$(jq -r 'keys|join(",")' "$STATE/forwarded/$SID22.json")" 'created
 check equals "$(LC_ALL=C ls -l "$STATE/forwarded/$SID22.json" | cut -c1-10)" '-rw-------'
 check equals "$(LC_ALL=C ls -ld "$STATE/forwarded" | cut -c1-10)" 'drwx------'
 forward22 "$WORK22"
-SID22B=$(jq -r '.args[4]' "$FAKE_LOG")
+SID22B=$(jq -r '.args[5]' "$FAKE_LOG")
 check test "$SID22B" != "$SID22"
 check test -f "$STATE/forwarded/$SID22B.json"
 
@@ -51,13 +51,13 @@ mv "$SANDBOX/record22" "$STATE/forwarded/$SID22.json"
 usage b 50; usage c 5
 forward22 "$WORK22" --continue "$SID22"
 check equals "$rc" 0
-check log22 '.args==["-p","--output-format","json","--resume",$sid,"--permission-mode","plan"] and (.config|endswith("/b")) and .depth=="1"'
+check log22 '.args==["-p","--output-format","stream-json","--verbose","--resume",$sid,"--permission-mode","plan"] and (.config|endswith("/b")) and .depth=="1"'
 check grep -qxF "claude-relay: profile b, session $SID22" "$SANDBOX/err"
 check test ! -e "$TASK22"
 check record22 '.last_used_at>now-60 and .created_at<now-900 and .profile=="b" and .cwd==$cwd'
 forward22 "$WORK22" --model sonnet --continue "$SID22" --write
 check equals "$rc" 0
-check log22 '.args==["-p","--output-format","json","--resume",$sid,"--model","sonnet","--permission-mode","acceptEdits"]'
+check log22 '.args==["-p","--output-format","stream-json","--verbose","--resume",$sid,"--model","sonnet","--permission-mode","acceptEdits"]'
 check equals "$(count22 "$STATE/forwarded" '*.json')" 2
 
 # 3: Unknown, malformed or traversal IDs and another cwd are refused untouched.
@@ -83,14 +83,14 @@ forward22 "$WORK22"
 check log22 'any(.args[]; .=="--model") | not'
 printf 'child_model=haiku\n' >> "$XDG_CONFIG_HOME/claude-relay/config"
 forward22 "$WORK22"
-check log22 '.args[3]=="--session-id" and .args[5:7]==["--model","haiku"] and .args[-1]=="plan"'
+check log22 '.args[4]=="--session-id" and .args[6:8]==["--model","haiku"] and .args[-1]=="plan"'
 export CLAUDE_RELAY_CHILD_MODEL=sonnet
 forward22 "$WORK22"
-check log22 '.args[5:7]==["--model","sonnet"]'
+check log22 '.args[6:8]==["--model","sonnet"]'
 forward22 "$WORK22" --model 'claude-opus-5-5[1m]'
-check log22 '.args[5:7]==["--model","claude-opus-5-5[1m]"]'
+check log22 '.args[6:8]==["--model","claude-opus-5-5[1m]"]'
 forward22 "$WORK22" --model us.anthropic.claude_x:1
-check log22 '.args[5:7]==["--model","us.anthropic.claude_x:1"]'
+check log22 '.args[6:8]==["--model","us.anthropic.claude_x:1"]'
 cp "$FAKE_LOG" "$SANDBOX/launch22-before"
 for bad in 'bad model' -p '$(touch INJECTED22)' 'a;b' .dot x/y "$(printf 'a\nb')"; do
   forward22 "$SANDBOX" --model "$bad"

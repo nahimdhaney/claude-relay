@@ -1,4 +1,4 @@
-# claude-relay — specification v0.3.0
+# claude-relay — specification v0.4.0
 
 A tool for using multiple Claude Code accounts (profiles with different
 `CLAUDE_CONFIG_DIR` values) without losing work when one runs out of quota:
@@ -59,11 +59,17 @@ Live observations from 2026-10-12 with Claude Code 2.1.296 are included below.
   `ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
   CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
   ANTHROPIC_BASE_URL`.
-- `claude -p` (headless) does not run the statusline, so it reports no quota
-  percentages. `forward` records its reported cost to break score ties.
-- With `--output-format json`, Claude Code 2.1.296 returns one result object.
-  Its `total_cost_usd` and `modelUsage` counters are cumulative for the session,
-  including on `--resume`. Relay subtracts the last totals it recorded.
+- `claude -p` (headless) does not run the statusline. Relay runs report quota
+  through stream-json instead: with `--output-format stream-json --verbose`,
+  Claude Code 2.1.296 prints one JSON object per line, including a
+  `rate_limit_event`:
+  `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1791909600,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.06,"resetsAt":1791909600},"seven_day":{"utilization":0.34,"resetsAt":1791932400}}},"session_id":"…"}`.
+  `utilization` is a fraction from 0 to 1. On the same account at the same
+  time, the statusline reported `five_hour` 6 and `seven_day` 34, with the same
+  reset times. Team seats send only `five_hour`.
+- The last stream line is the same result object that `--output-format json`
+  prints. Its `total_cost_usd` and `modelUsage` counters are cumulative for the
+  session, including on `--resume`. Relay subtracts the last totals it recorded.
 - An already exhausted account never gets a successful response or a
   measurement; it needs an exhaustion mark independent of `rate_limits`.
 - The first interactive launch in a new folder shows the workspace trust prompt.
@@ -71,8 +77,9 @@ Live observations from 2026-10-12 with Claude Code 2.1.296 are included below.
   `run` and `resume` remove that marker along with `CLAUDECODE`.
 - `forward` relies on the CLI flags `--session-id <uuid>` (start a session with
   a caller-chosen ID), `--resume <id>` (continue it with a new `-p` prompt from
-  the same cwd and profile) and `--model <alias>`. It reads JSON output for
-  result text and spend, but keeps its own validated profile and session ID.
+  the same cwd and profile) and `--model <alias>`. It reads stream-json output
+  for result text, spend and quota, but keeps its own validated profile and
+  session ID.
   The suite uses a fake binary; continuing a forwarded session with real
   Claude Code still needs a manual check.
 - Each profile reads its own `<config_dir>/CLAUDE.md`, so a forwarded child
@@ -116,7 +123,8 @@ tests/release.sh          discovery, upgrades, forwarding and boundary regressio
 tests/v022.sh             child model, continued sessions, agent backups, doctor note
 tests/spend-ledger.sh     JSON output, private ledger, deltas and pruning
 tests/spend-selection.sh  rolling spend, score ties, JSON fields and handoff timing
-tests/fixtures/           sample JSON (statusline, hooks)
+tests/child-usage.sh      stream-json output, relay usage captures and exhaustion
+tests/fixtures/           sample JSON (statusline, hooks) and a JSONL child stream
 AGENTS.md                canonical agent installation guide
 CLAUDE.md                install/development entry points
 VERSION                  CLI release version
@@ -392,7 +400,7 @@ its score as below.
   `Note: pool profiles read different CLAUDE.md instructions: <name>=<identity>, ...`,
   in pool order. The note is informational and never makes doctor fail.
 
-`claude-relay --version` reads `VERSION` (0.3.0); `claude-relay help [subcommand]`.
+`claude-relay --version` reads `VERSION` (0.4.0); `claude-relay help [subcommand]`.
 
 ## agents/relay.md
 
@@ -412,7 +420,7 @@ Always report the session ID back to the caller so it can be continued later.
 `claude-relay forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID]`
 : Requires unset `CLAUDE_RELAY_DEPTH`, resolves the current profile,
   picks another profile, and launches
-  `claude -p --output-format json [--session-id S | --resume S] [--model M] --permission-mode MODE`
+  `claude -p --output-format stream-json --verbose [--session-id S | --resume S] [--model M] --permission-mode MODE`
   in that order, with `plan` mode (`acceptEdits` with `--write`). It rejects
   files outside the relay task directory, symlinks, nonregular files and files
   owned by another user. It sets mode 600 after validation. Cleanup is armed
@@ -450,20 +458,27 @@ After validation, `forward` creates a private `tasks/out-XXXXXX` buffer with
 stdout to this buffer. Its stderr goes straight to the caller. `forward`
 captures its exit status, including nonzero results, before reading the buffer.
 
-An envelope is exactly one JSON value in the whole buffer. It must be an
-object with `type:"result"` and a boolean `is_error`. `result` is optional.
+The buffer is a **stream** when the whole buffer parses as a sequence of JSON
+values, it holds at least one value, and every value is an object with a
+string `type`. A single such object is a stream of one, so v0.3.0 buffers
+keep working. The **envelope** is the last value with `type:"result"` and a
+boolean `is_error`. `result` is optional.
 
-- For an envelope, record spend first, even if the child reports an error or
-  exits nonzero. If `result` is a string, print it followed by one newline.
+- For any stream, run the recording worker first (see below), even if the
+  child reports an error or exits nonzero.
+- For an envelope, if `result` is a string, print it followed by one newline.
   An empty string prints just that newline. If it is absent or not a string,
   print no result text.
 - If `is_error` is true, also print
   `claude-relay: the child reported an error (<subtype>).` on stderr.
   Use `subtype` only when it is a nonempty string of lowercase ASCII letters
   and underscores. Otherwise use `unknown`.
-- Anything else passes through byte for byte and records no spend. This
-  includes plain text, empty output, multiple JSON values, trailing garbage
-  and JSON with the wrong shape.
+- A stream without an envelope prints nothing on stdout and prints
+  `claude-relay: the child ended without a result.` on stderr. It records no
+  spend, but still records usage.
+- Anything else passes through byte for byte and records nothing. This
+  includes plain text, empty output, trailing garbage, and JSON values that
+  are not objects or lack a string `type`.
 
 Exit with the child's status, even if it disagrees with `is_error`. HUP, INT
 or TERM received by `forward` instead makes it exit 1 and clean up. While it
@@ -514,12 +529,15 @@ Those session records retain their 30-day lifetime. Ledger files older than
 seven days are pruned before recording and during state pruning. State pruning
 runs at most once every ten minutes.
 
-Recording runs in a separate strict Bash worker, `__record-spend`. It checks
-the profile is in the pool, the session is a lowercase UUID, and the buffer is
-an owned regular `out-*` file directly inside `tasks/`, with mode 600. It
-rejects symlinks and never writes stdout. If it fails, `forward` prints
-`claude-relay: could not record relay spend.` on stderr. The result and child
-exit status stay unchanged.
+Recording runs in a separate strict Bash worker,
+`__record-run <profile> <session> <buffer>`. It checks the profile is in the
+pool, the session is a lowercase UUID, and the buffer is an owned regular
+`out-*` file directly inside `tasks/`, with mode 600. It rejects symlinks and
+never writes stdout. It records spend from the envelope when there is one,
+then usage from the usage event when there is one (see Relay usage captures).
+A failure in either part makes the worker exit nonzero after it attempts the
+other part. `forward` then prints `claude-relay: could not record relay run data.`
+on stderr. The result and child exit status stay unchanged.
 
 `relay_spend <profile>` returns `{"cost_usd":N,"runs":N,"complete":B,"errors":N}` for
 the rolling last 5 hours. It preselects regular files by mtime, with a 60-second
@@ -538,11 +556,35 @@ versions still count as runs. Both `status --json` and `pick --json` expose
 this object as `relay_spend_5h`. Cost is a relative weight between accounts,
 not a bill: subscription plans do not charge per run.
 
+### Relay usage captures
+
+The **usage event** is the last stream value with `type:"rate_limit_event"`
+whose `rate_limit_info.unifiedWindows` is an object. For each of `five_hour`
+and `seven_day` that is an object with a finite numeric `utilization` and a
+finite numeric `resetsAt` of at least 0, build
+`{used_percentage: utilization×100 clamped to 0–100 and rounded to 2 decimals, resets_at: resetsAt}`.
+Other windows are dropped. If no window is valid, nothing is recorded.
+
+The capture has the statusline shape plus a source marker:
+
+```json
+{"profile":"personal2","captured_at":1791898000.5,"session_id":"<forward's session>","model":null,"source":"relay","rate_limits":{"five_hour":{"used_percentage":6,"resets_at":1791909600},"seven_day":{"used_percentage":34,"resets_at":1791932400}}}
+```
+
+It is stored with the statusline's capture code (lock, legacy copy, pruning)
+as the child profile, in `usage/<child profile>/<session>.json`. `measurement`
+reads it like any other capture. `session_id` is the session `forward`
+assigned or resumed, never the one the child reports, so `--continue` updates
+the same file. Only these fields are stored, never text.
+
+If `rate_limit_info.status` is `"rejected"` and `rate_limit_info.resetsAt` is
+a finite number in the future, also mark the child profile exhausted until
+`resetsAt` (source `relay`), so `pick` skips it.
+
 ### Known forwarding limitations
 
 - Claude Code's text mode can print several results when background tasks
-  finish at exit. JSON mode keeps only the last result, so `forward` returns
-  only that one. Children use `plan` mode by default and rarely start such
+  finish at exit. `forward` returns only the last result in the stream. Children use `plan` mode by default and rarely start such
   tasks.
 - A child running for more than one day could lose its output buffer to stale
   file pruning.
@@ -614,6 +656,12 @@ Minimum cases:
   unique records; recording failures; seven-day pruning and the five-hour
   window; malformed and symlinked files; JSON fields; the guard handoff path
   with 300 ledger files per profile stays under 1.5 seconds.
+- relay usage (`tests/child-usage.sh`): stream-json argv; the last result is
+  rendered and recorded; usage captures for full and Team-style events; invalid
+  windows dropped and over-limit values clamped; rejected events mark
+  exhaustion only with a future reset; streams without a result; `--continue`
+  updates the same capture; non-stream passthrough; recording failures; no
+  saved text and private modes.
 
 Run `bash tests/run.sh` and `/bin/bash tests/run.sh`: all regressions must pass.
 Also run with jq 1.6 when available. Run `shellcheck` if installed. The suite does not
