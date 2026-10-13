@@ -61,6 +61,12 @@ output elsewhere. **Ask which profiles to include** and what to call each one. E
 `claude` with that `CLAUDE_CONFIG_DIR` and signs in; never do the login flow
 yourself).
 
+If only one profile is logged in, claude-relay has nothing to switch to yet.
+Explain how to add one and let the user do it: create a folder such as
+`~/.claude-profiles/work`, run `CLAUDE_CONFIG_DIR=~/.claude-profiles/work claude`
+and sign in with `/login`. Then run `detect` again. See "Add another account"
+in README.md.
+
 ## 4. Preview, then install
 
 With profiles under `~/.claude-profiles/<name>`:

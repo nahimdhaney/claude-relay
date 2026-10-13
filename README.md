@@ -63,6 +63,22 @@ If you have several logins, the preview lists them; pick the ones to use:
 Then add `~/.local/bin` to your `PATH` if asked, and restart open Claude Code
 sessions. Each account starts reporting quota after its first reply or relay run.
 
+### Add another account
+
+Each account needs its own Claude Code profile: a folder that keeps its own
+login. If you only have the default one (`~/.claude`), create a second profile
+and sign in there once:
+
+```bash
+mkdir -p ~/.claude-profiles/work
+CLAUDE_CONFIG_DIR=~/.claude-profiles/work claude   # then run /login inside
+```
+
+From then on, start that account with the same `CLAUDE_CONFIG_DIR`. A shell
+alias makes it easy: `alias claude-work='CLAUDE_CONFIG_DIR=~/.claude-profiles/work claude'`.
+claude-relay finds `~/.claude` and every folder in `~/.claude-profiles`. Run
+`./install.sh --dry-run` again afterwards to include the new one.
+
 ### Update
 
 ```bash
