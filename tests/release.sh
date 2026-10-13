@@ -35,8 +35,8 @@ jq '.captured_at=now-22000 | .rate_limits.five_hour.resets_at=4102444800' "$STAT
 mv "$SANDBOX/stale" "$STATE/usage/a/active-1.json"
 relay status --json > "$SANDBOX/status"
 check json_is "$SANDBOX/status" '.[0].score==94 and .[0].capture_count==14'
-check equals "$(relay --version)" 'claude-relay 0.2.2'
-check equals "$(cat "$ROOT/VERSION" 2>/dev/null)" 0.2.2
+check equals "$(relay --version)" "claude-relay $(cat "$ROOT/VERSION")"
+check grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' "$ROOT/VERSION"
 # run preserves stdin verbatim, without interpolating or adding it to argv.
 cp "$CLAUDE_RELAY_CLAUDE_BIN" "$SANDBOX/fake-original"
 cat >> "$CLAUDE_RELAY_CLAUDE_BIN" <<'STDIN'

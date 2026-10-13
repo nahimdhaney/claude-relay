@@ -76,3 +76,30 @@ cmd_record_spend() (
     jq -c --argjson t "$(printf '%s' "$entry" | jq -c '.[1]')" 'select(type=="object") | .totals=$t' "$record" | atomic_json "$record"
   fi
 )
+
+# Relay spend over the last 5 hours; old files are skipped before parsing.
+relay_spend() (
+  local profile=$1 dir="$STATE_DIR/spend/$1" cutoff file files=() count=0 data
+  local zero='{"cost_usd":0,"runs":0,"complete":true}'
+  local filter='def finite: if type=="number" then (isinfinite|not) and (isnan|not) else false end;
+    def ok: type=="object" and .profile==$p and (.at|finite) and .at>=now-$w and .at<=now+60
+      and (.cost_usd==null or ((.cost_usd|finite) and .cost_usd>=0));'
+  if [ -L "$STATE_DIR" ] || [ -L "$STATE_DIR/spend" ] || [ -L "$dir" ] || [ ! -d "$dir" ]; then
+    printf '%s\n' "$zero"; return 0
+  fi
+  cutoff=$(mktemp "$STATE_DIR/.spend-window.XXXXXX") || { printf '%s\n' "$zero"; return 0; }
+  trap 'rm -f "$cutoff"' EXIT
+  touch -t "$(jq -nr --argjson w "$SPEND_WINDOW" 'now-$w-60 | strflocaltime("%Y%m%d%H%M.%S")')" "$cutoff" || { printf '%s\n' "$zero"; return 0; }
+  while IFS= read -r -d '' file; do
+    [ ! -L "$file" ] || continue
+    files[$count]=$file; count=$((count+1))
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -name '*.json' -newer "$cutoff" -print0 2>/dev/null)
+  if [ "$count" -eq 0 ]; then printf '%s\n' "$zero"; return 0; fi
+  if ! data=$(jq -cn --arg p "$profile" --argjson w "$SPEND_WINDOW" "$filter"'[inputs|select(ok)]' "${files[@]}" 2>/dev/null); then
+    # Slurp each fallback file so trailing garbage cannot count a valid prefix.
+    data=$(for file in "${files[@]}"; do
+      jq -cs --arg p "$profile" --argjson w "$SPEND_WINDOW" "$filter"'.[]|select(ok)' "$file" 2>/dev/null || true
+    done | jq -cs .)
+  fi
+  printf '%s' "$data" | jq -c '{cost_usd:(map(.cost_usd // 0)|add // 0),runs:length,complete:all(.[]; .cost_usd!=null)}'
+)

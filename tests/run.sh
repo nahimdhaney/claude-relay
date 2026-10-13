@@ -325,6 +325,8 @@ source "$ROOT/tests/forward-and-preview.sh"
 source "$ROOT/tests/v022.sh"
 # shellcheck source=tests/spend-ledger.sh
 source "$ROOT/tests/spend-ledger.sh"
+# shellcheck source=tests/spend-selection.sh
+source "$ROOT/tests/spend-selection.sh"
 # Report timings for the common, non-warning path without imposing a flaky CI limit.
 usage a 20
 for operation in statusline guard; do

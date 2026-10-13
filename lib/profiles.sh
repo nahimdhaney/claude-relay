@@ -126,7 +126,7 @@ cmd_exhausted() {
   else mark_exhausted "$profile" manual "$mode" "$value"; fi
 }
 cmd_status() {
-  local json=false i=0 name dir m account rows='[]'
+  local json=false i=0 name dir m account spend rows='[]'
   case "${1:-}" in --json) json=true; shift ;; esac
   [ "$#" -eq 0 ] || die 'Usage: status [--json]'
   load_pool
@@ -135,7 +135,8 @@ cmd_status() {
     m=$(measurement "$name") account='{}'
     # Only these two non-secret fields leave jq; never dump the auth file.
     account=$(account_metadata "$dir")
-    rows=$(jq -cn --argjson rows "$rows" --argjson m "$m" --argjson account "$account" --arg name "$name" --arg dir "$dir" --arg current "$CURRENT_PROFILE" '$rows + [$m + {profile:$name,config_dir:$dir,current:($name==$current),account:$account}]')
+    spend=$(relay_spend "$name")
+    rows=$(jq -cn --argjson s "$spend" --argjson rows "$rows" --argjson m "$m" --argjson account "$account" --arg name "$name" --arg dir "$dir" --arg current "$CURRENT_PROFILE" '$rows + [$m + {profile:$name,config_dir:$dir,current:($name==$current),account:$account,relay_spend_5h:$s}]')
     i=$((i+1))
   done
   if $json; then printf '%s\n' "$rows" | jq .; else
@@ -151,20 +152,29 @@ cmd_status() {
   fi
 }
 choose_profile() {
-  local i=0 name dir score m best='' best_m='' lowest=101 x skip
+  local i=0 name dir m x skip cands='[]' spend picked
   while [ "$i" -lt "$POOL_COUNT" ]; do
     name=${POOL_NAMES[$i]} dir=${POOL_DIRS[$i]} i=$((i+1))
     [ -d "$dir" ] || continue
     skip=false
     for x in "$@"; do [ "$name" != "$x" ] || skip=true; done
     $skip && continue
-    m=$(measurement "$name") score=$(printf '%s' "$m" | jq -r .score)
-    if jq -en --argjson s "$score" --argjson h "$HANDOFF_AT" --argjson b "$lowest" '$s<$h and $s<$b' >/dev/null; then
-      best=$name best_m=$m lowest=$score
-    fi
+    m=$(measurement "$name")
+    jq -en --argjson m "$m" --argjson h "$HANDOFF_AT" '$m.score<$h' >/dev/null || continue
+    spend=$(relay_spend "$name")
+    cands=$(jq -cn --argjson c "$cands" --arg n "$name" --argjson m "$m" --argjson s "$spend" --argjson i "$i" \
+      '$c+[{name:$n,i:$i,m:($m+{relay_spend_5h:$s})}]')
   done
-  [ -n "$best" ] || { printf 'claude-relay: no eligible profiles.\n' >&2; return 3; }
-  PICKED=$best PICKED_METRICS=$best_m
+  # Compare spend only among lowest-score ties; missing costs put runs first.
+  picked=$(printf '%s' "$cands" | jq -c '
+    if length==0 then empty else
+      (map(.m.score)|min) as $low | map(select(.m.score==$low)) as $t |
+      ($t|all(.[]; .m.relay_spend_5h.complete)) as $costs |
+      $t | min_by(.m.relay_spend_5h as $s | if $costs then [$s.cost_usd,$s.runs,.i] else [$s.runs,$s.cost_usd,.i] end)
+    end')
+  [ -n "$picked" ] || { printf 'claude-relay: no eligible profiles.\n' >&2; return 3; }
+  PICKED=$(printf '%s' "$picked" | jq -r .name)
+  PICKED_METRICS=$(printf '%s' "$picked" | jq -c .m)
 }
 cmd_pick() {
   local json=false excludes=() count=0
