@@ -32,7 +32,7 @@ count22() { find "$1" -type f -name "$2" | wc -l | tr -d ' '; }
 # 1: A new child gets a known random session ID and a private record.
 forward22 "$WORK22"
 check equals "$rc" 0
-check log22 '.args[0:4]==["-p","--output-format","text","--session-id"] and (.args[4]|test($re)) and .args[5:]==["--permission-mode","plan"] and (.config|endswith("/b"))'
+check log22 '.args[0:4]==["-p","--output-format","json","--session-id"] and (.args[4]|test($re)) and .args[5:]==["--permission-mode","plan"] and (.config|endswith("/b"))'
 SID22=$(jq -r '.args[4]' "$FAKE_LOG")
 check grep -qxF "claude-relay: profile b, session $SID22" "$SANDBOX/err"
 check test ! -e "$TASK22"
@@ -51,13 +51,13 @@ mv "$SANDBOX/record22" "$STATE/forwarded/$SID22.json"
 usage b 50; usage c 5
 forward22 "$WORK22" --continue "$SID22"
 check equals "$rc" 0
-check log22 '.args==["-p","--output-format","text","--resume",$sid,"--permission-mode","plan"] and (.config|endswith("/b")) and .depth=="1"'
+check log22 '.args==["-p","--output-format","json","--resume",$sid,"--permission-mode","plan"] and (.config|endswith("/b")) and .depth=="1"'
 check grep -qxF "claude-relay: profile b, session $SID22" "$SANDBOX/err"
 check test ! -e "$TASK22"
 check record22 '.last_used_at>now-60 and .created_at<now-900 and .profile=="b" and .cwd==$cwd'
 forward22 "$WORK22" --model sonnet --continue "$SID22" --write
 check equals "$rc" 0
-check log22 '.args==["-p","--output-format","text","--resume",$sid,"--model","sonnet","--permission-mode","acceptEdits"]'
+check log22 '.args==["-p","--output-format","json","--resume",$sid,"--model","sonnet","--permission-mode","acceptEdits"]'
 check equals "$(count22 "$STATE/forwarded" '*.json')" 2
 
 # 3: Unknown, malformed or traversal IDs and another cwd are refused untouched.

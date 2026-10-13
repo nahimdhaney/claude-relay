@@ -35,8 +35,8 @@ jq '.captured_at=now-22000 | .rate_limits.five_hour.resets_at=4102444800' "$STAT
 mv "$SANDBOX/stale" "$STATE/usage/a/active-1.json"
 relay status --json > "$SANDBOX/status"
 check json_is "$SANDBOX/status" '.[0].score==94 and .[0].capture_count==14'
-check equals "$(relay --version)" 'claude-relay 0.2.2'
-check equals "$(cat "$ROOT/VERSION" 2>/dev/null)" 0.2.2
+check equals "$(relay --version)" "claude-relay $(cat "$ROOT/VERSION")"
+check grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' "$ROOT/VERSION"
 # run preserves stdin verbatim, without interpolating or adding it to argv.
 cp "$CLAUDE_RELAY_CLAUDE_BIN" "$SANDBOX/fake-original"
 cat >> "$CLAUDE_RELAY_CLAUDE_BIN" <<'STDIN'
@@ -75,7 +75,7 @@ export SANDBOX
 ln -s "$CLI" "$SANDBOX/fake/claude-relay"
 (cd "$SANDBOX" && "$BASH" "$SANDBOX/forwarder.sh") > "$SANDBOX/out" 2> "$SANDBOX/err"
 check cmp -s "$SANDBOX/prompt" "$FAKE_STDIN"
-check json_is "$FAKE_LOG" '.depth=="1" and .args[0:4]==["-p","--output-format","text","--session-id"] and .args[5:]==["--permission-mode","plan"]'
+check json_is "$FAKE_LOG" '.depth=="1" and .args[0:4]==["-p","--output-format","json","--session-id"] and .args[5:]==["--permission-mode","plan"]'
 check test ! -e "$SANDBOX/SHOULD_NOT_EXIST"
 check test ! -e "$SANDBOX/ALSO_NOT"
 check equals "$(find "$STATE/tasks" -name 'task-*.txt' | wc -l | tr -d ' ')" 0

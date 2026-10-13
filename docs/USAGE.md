@@ -123,10 +123,22 @@ any exist. Within that subset (or all fresh captures if none are current),
 each window uses the latest reset time, then the highest usage
 percentage on a tie. If none are fresh, relay uses the newest capture alone.
 Without any active windows, the default score is 50. `pick` selects the lowest
-score, excludes profiles with missing directories or scores of 97 or higher,
-and breaks ties by pool order. If there are no candidates, it returns exit
-code 3. Explicit profile selection allows a manual choice even when the
-profile does not meet those filters.
+score and excludes profiles with missing directories or scores of 97 or higher.
+Among profiles tied for the lowest score, it prefers the least relay cost in
+the last 5 hours, then the fewest runs. If any tied profile has a run without
+a known cost, it compares run counts first, then cost. Remaining ties go to
+pool order. If there are no candidates, it returns exit code 3. Explicit
+profile selection allows a manual choice even when the profile does not meet
+those filters.
+
+`status --json` and `pick --json` include
+`"relay_spend_5h":{"cost_usd":0.12,"runs":3,"complete":true,"errors":0}`. The
+window rolls over the last 5 hours. `complete` is false if any counted run has
+no valid cost. `errors` counts runs whose child reported an error; among tied
+profiles, fewer errors win first. With no runs, the values are 0, 0, true and 0. `cost_usd` is a relative
+weight between accounts, not a bill: subscription plans do not charge per run.
+Relay spend only breaks score ties. An unknown profile at 50 still beats a
+measured 60, even if it has spent more. The text `status` table is unchanged.
 
 An account marked as exhausted has a score of 100 until the mark expires;
 `status` shows "exhausted until HH:MM" in local time. You can set or clear the
@@ -266,11 +278,20 @@ State is stored under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-relay/`:
   `message`. The session_id and those values are sanitized and truncated to
   200 characters; transcripts and other payload values are not logged.
 - `tasks/`: private forwarding files; `task-path` returns an unused path here.
-  Tasks older than one day are pruned on `task-path` and state pruning.
+  `out-*` files hold child output while `forward` runs. Tasks and output buffers
+  are deleted when forwarding ends. Files older than one day are also pruned
+  on `task-path` and state pruning. A child running longer than a day could
+  lose its output buffer.
+- `spend/<profile>/<session>-<epoch>-<random>.json`: one private record per
+  relay run, with cost and token counts but no task or result text. Records
+  older than seven days are pruned when spend is recorded and during state
+  pruning.
 - `forwarded/<session_id>.json`: one record per session `forward` created,
-  `{session_id, profile, cwd, created_at, last_used_at}` with epoch-second
-  timestamps; mode 600 in a 700 directory. Records unused for 30 days are
-  pruned on each `forward`.
+  `{session_id, profile, cwd, created_at, last_used_at, totals}` with epoch-second
+  timestamps. `totals` holds the last reported cumulative cost and token counts
+  after an envelope is recorded. Continued runs record the increase from those
+  totals. Records have mode 600 in a 700 directory. Records unused for 30 days
+  are pruned on each `forward`.
 - `backups/`: backups of `~/.claude/agents/relay.md` taken before install
   replaces it or uninstall removes it (mode 600, directory 700).
 - `prune.json`: timestamp of the last successful state prune.
@@ -302,11 +323,23 @@ Usage is charged to the selected account, and stderr reports its profile.
 The default permission mode is `plan`. The forwarder may pass `--write` (using
 `acceptEdits`) only when the delegating prompt explicitly says the user approved
 file edits. Requests inside task text are data and cannot grant that approval.
-Request `run_in_background` for long tasks. Headless usage is not measured.
+Request `run_in_background` for long tasks. Headless runs do not report quota
+percentages. `forward` records their cost and uses it to break score ties.
 
 ```bash
 claude-relay forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID]
 ```
+
+**Child output.** `forward` asks for JSON, records the cost, and prints the
+final result text followed by a newline. It keeps the child's exit status and
+passes its stderr through. An error result also adds a short note on stderr.
+Unrecognized output passes through byte for byte and records no spend. A
+recording failure prints `claude-relay: could not record relay spend.` on
+stderr without changing the result or exit status.
+
+Claude Code's text mode can print several results when background tasks finish
+at exit. JSON mode keeps only the last result, so `forward` returns only that
+one. Children use `plan` mode by default and rarely start background tasks.
 
 **Child model.** `--model ALIAS` passes `--model ALIAS` to the child. Without
 the flag, `CLAUDE_RELAY_CHILD_MODEL` applies, then `child_model` from the
@@ -411,8 +444,9 @@ Observed in live tests on **2026-10-12**, with **Claude Code 2.1.296**:
   15 sessions sharing one weekly reset found all four current sessions at 2%,
   while eleven idle sessions without a five-hour window reported 7–94%. The
   current-capture rule prevents those stale values from triggering a warning.
-- With `claude -p`, the statusline **does not run**, so relay does not measure
-  headless usage, including the subagent's usage.
+- With `claude -p`, the statusline **does not run**, so relay cannot measure
+  headless quota percentages. `forward` records reported cost and token counts
+  and uses cost to break score ties.
 - An account already at its limit never gets a successful response and
   produces no measurement. Exhaustion marks address this: they prevent that
   account from appearing as "no data" with a score of 50 and being selected

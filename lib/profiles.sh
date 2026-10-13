@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=lib/spend.sh
+source "$RELAY_ROOT/lib/spend.sh"
 # Project only the two permitted login metadata fields, never whole auth data.
 account_metadata() {
   local file="$1/.claude.json"
@@ -124,7 +126,7 @@ cmd_exhausted() {
   else mark_exhausted "$profile" manual "$mode" "$value"; fi
 }
 cmd_status() {
-  local json=false i=0 name dir m account rows='[]'
+  local json=false i=0 name dir m account spend rows='[]'
   case "${1:-}" in --json) json=true; shift ;; esac
   [ "$#" -eq 0 ] || die 'Usage: status [--json]'
   load_pool
@@ -133,7 +135,8 @@ cmd_status() {
     m=$(measurement "$name") account='{}'
     # Only these two non-secret fields leave jq; never dump the auth file.
     account=$(account_metadata "$dir")
-    rows=$(jq -cn --argjson rows "$rows" --argjson m "$m" --argjson account "$account" --arg name "$name" --arg dir "$dir" --arg current "$CURRENT_PROFILE" '$rows + [$m + {profile:$name,config_dir:$dir,current:($name==$current),account:$account}]')
+    spend=$(relay_spend "$name")
+    rows=$(jq -cn --argjson s "$spend" --argjson rows "$rows" --argjson m "$m" --argjson account "$account" --arg name "$name" --arg dir "$dir" --arg current "$CURRENT_PROFILE" '$rows + [$m + {profile:$name,config_dir:$dir,current:($name==$current),account:$account,relay_spend_5h:$s}]')
     i=$((i+1))
   done
   if $json; then printf '%s\n' "$rows" | jq .; else
@@ -149,20 +152,30 @@ cmd_status() {
   fi
 }
 choose_profile() {
-  local i=0 name dir score m best='' best_m='' lowest=101 x skip
+  local i=0 name dir m x skip cands='[]' spend picked
   while [ "$i" -lt "$POOL_COUNT" ]; do
     name=${POOL_NAMES[$i]} dir=${POOL_DIRS[$i]} i=$((i+1))
     [ -d "$dir" ] || continue
     skip=false
     for x in "$@"; do [ "$name" != "$x" ] || skip=true; done
     $skip && continue
-    m=$(measurement "$name") score=$(printf '%s' "$m" | jq -r .score)
-    if jq -en --argjson s "$score" --argjson h "$HANDOFF_AT" --argjson b "$lowest" '$s<$h and $s<$b' >/dev/null; then
-      best=$name best_m=$m lowest=$score
-    fi
+    m=$(measurement "$name")
+    jq -en --argjson m "$m" --argjson h "$HANDOFF_AT" '$m.score<$h' >/dev/null || continue
+    spend=$(relay_spend "$name")
+    cands=$(jq -cn --argjson c "$cands" --arg n "$name" --argjson m "$m" --argjson s "$spend" --argjson i "$i" \
+      '$c+[{name:$n,i:$i,m:($m+{relay_spend_5h:$s})}]')
   done
-  [ -n "$best" ] || { printf 'claude-relay: no eligible profiles.\n' >&2; return 3; }
-  PICKED=$best PICKED_METRICS=$best_m
+  # Compare spend only among lowest-score ties: fewer failed runs first, then
+  # cost and runs (runs first when a cost is missing), then pool order.
+  picked=$(printf '%s' "$cands" | jq -c '
+    if length==0 then empty else
+      (map(.m.score)|min) as $low | map(select(.m.score==$low)) as $t |
+      ($t|all(.[]; .m.relay_spend_5h.complete)) as $costs |
+      $t | min_by(.m.relay_spend_5h as $s | if $costs then [$s.errors,$s.cost_usd,$s.runs,.i] else [$s.errors,$s.runs,$s.cost_usd,.i] end)
+    end')
+  [ -n "$picked" ] || { printf 'claude-relay: no eligible profiles.\n' >&2; return 3; }
+  PICKED=$(printf '%s' "$picked" | jq -r .name)
+  PICKED_METRICS=$(printf '%s' "$picked" | jq -c .m)
 }
 cmd_pick() {
   local json=false excludes=() count=0
@@ -244,7 +257,8 @@ prune_forwarded() {
 }
 cmd_forward() (
   local task='' mode=plan cleanup tasks parent model='' resume='' session profile cwd record recorded updated allowed
-  local args=(-p --output-format text)
+  local out status kind has_result is_error subtype
+  local args=(-p --output-format json)
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --task-file) need_value "$@"; [ -z "$task" ] || die 'Only one task file is allowed.'; task=$(absolute_path "$2"); shift 2 ;;
@@ -322,11 +336,31 @@ cmd_forward() (
   chmod 600 "$task"
   [ "$(file_mode "$task")" = 600 ] || die 'Task file must have mode 600.'
   printf '%s\n' "$updated" | atomic_json "$record"
+  out=$(mktemp "$STATE_DIR/tasks/out-XXXXXX") || die 'Could not create the output buffer.'
+  [ "$(file_mode "$out")" = 600 ] || { rm -f "$out"; die 'Output buffer must have mode 600.'; }
   # Cleanup begins only after all validation succeeds. Refusals retain input.
-  printf -v cleanup 'rm -f %q' "$task"
+  printf -v cleanup 'rm -f %q %q' "$task" "$out"
   trap "$cleanup" EXIT
   trap 'exit 1' HUP INT TERM
   printf 'claude-relay: profile %s, session %s\n' "$profile" "$session" >&2
-  # The parent retains its cleanup trap while the child execs Claude.
-  (launch_claude "$profile" child "${args[@]}") < "$task"
+  status=0
+  # Capture failure explicitly so errexit does not skip rendering.
+  (launch_claude "$profile" child "${args[@]}") < "$task" > "$out" || status=$?
+  kind=$(jq -sr '
+    if length==1 and (.[0]|type)=="object" and .[0].type=="result" and (.[0].is_error|type)=="boolean"
+    then .[0] | [ "envelope", ((.result|type)=="string"|tostring), (.is_error|tostring),
+                  (.subtype | if type=="string" then
+                    if test("^[a-z_]+\\z") then . else "unknown" end
+                  else "unknown" end) ] | @tsv
+    else "raw" end' "$out" 2>/dev/null) || kind=raw
+  case "$kind" in
+    envelope*)
+      "$BASH" "$RELAY_BIN" __record-spend "$profile" "$session" "$out" >&2 ||
+        printf 'claude-relay: could not record relay spend.\n' >&2
+      IFS=$'\t' read -r kind has_result is_error subtype <<< "$kind"
+      if [ "$has_result" = true ]; then jq -sj '.[0].result' "$out"; printf '\n'; fi
+      [ "$is_error" != true ] || printf 'claude-relay: the child reported an error (%s).\n' "$subtype" >&2 ;;
+    *) cat "$out" ;;
+  esac
+  exit "$status"
 )

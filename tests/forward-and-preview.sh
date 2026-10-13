@@ -180,7 +180,7 @@ for doc in SECURITY.md AGENTS.md; do
   check grep -Eq 'commit SHA|commit.*SHA' "$ROOT/$doc"
   check grep -q 'never.*main' "$ROOT/$doc"
 done
-check equals "$(cat "$ROOT/VERSION")" 0.2.2
+check equals "$(head -1 "$ROOT/docs/SPEC.md")" "# claude-relay — specification v$(cat "$ROOT/VERSION")"
 
 # 7: Interactive launches clear inherited depth; print launches increment it.
 for depth in unset 0 99 invalid; do

@@ -37,13 +37,13 @@ of overwriting it.
 ```bash
 git clone https://github.com/nahimdhaney/claude-relay.git ~/.local/share/claude-relay
 cd ~/.local/share/claude-relay
-git checkout v0.2.2
+git checkout v0.3.0
 ```
 
 Pin a release tag or commit SHA, never `main`. Before installing or updating,
 compare `git rev-parse HEAD` with the release commit SHA listed in the
 GitHub release notes for that version. When tags are signed, run
-`git verify-tag v0.2.2` and verify the signer against a trusted maintainer key.
+`git verify-tag v0.3.0` and verify the signer against a trusted maintainer key.
 A matching name alone does not authenticate a tag. Stop if the SHA differs or
 an expected signature cannot be verified.
 
@@ -98,8 +98,8 @@ has had at least one reply in an interactive session; that is expected.
 
 - Restart open Claude Code sessions, or they keep the old settings until they
   reload them.
-- Usage is measured from interactive sessions only; `claude -p` runs are not
-  measured.
+- Quota percentages come from interactive sessions only. Relay records
+  forwarded runs' cost to break ties between profiles with equal scores.
 - Daily use: `claude-relay status`, `claude-relay pick`, and
   `claude-relay resume --last` after a handoff.
 - To remove it: `claude-relay uninstall` (add `--purge` to delete its state).
