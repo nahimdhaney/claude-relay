@@ -61,7 +61,7 @@ path, login status (email metadata present), email, organization and pool
 membership. This is not a check that a saved login is still valid. Generated
 names may need `--profile name=dir` when they differ from the directory name.
 
-If you already use `claude-profile`:
+With profiles under `~/.claude-profiles/<name>`:
 
 ```bash
 ./install.sh --profiles personal,work --with-agent
@@ -91,6 +91,12 @@ claude-profile copies that file into a profile each time it launches it. If
 you start profiles another way, or set `CLAUDE_PROFILE_SYNC_SETTINGS=0`, run
 `claude-profile --sync-settings <name>` for each profile after installing, or
 install with `--settings <profile dir>/settings.json` for each one.
+
+`claude-profile` is optional, and we do not recommend installing it just for
+claude-relay: a shell alias per profile (`alias claude-work='CLAUDE_CONFIG_DIR=~/.claude-profiles/work claude'`)
+does the same job. It is third-party code that runs inside the folders that
+hold your logins, and on each launch it replaces the profile's `settings.json`
+with `~/.claude/settings.json`, so changes made only in one profile are lost.
 
 Installation adds groups to `UserPromptSubmit`, `PostToolUse` and `StopFailure`
 (without a matcher), preserves unrelated hooks, and wraps the previous

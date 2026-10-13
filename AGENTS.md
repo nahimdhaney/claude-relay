@@ -65,7 +65,8 @@ If only one profile is logged in, claude-relay has nothing to switch to yet.
 Explain how to add one and let the user do it: create a folder such as
 `~/.claude-profiles/work`, run `CLAUDE_CONFIG_DIR=~/.claude-profiles/work claude`
 and sign in with `/login`. Then run `detect` again. See "Add another account"
-in README.md.
+in README.md. Suggest a shell alias to start each profile; do not recommend
+installing a profile manager such as `claude-profile`.
 
 ## 4. Preview, then install
 

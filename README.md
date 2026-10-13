@@ -79,6 +79,10 @@ alias makes it easy: `alias claude-work='CLAUDE_CONFIG_DIR=~/.claude-profiles/wo
 claude-relay finds `~/.claude` and every folder in `~/.claude-profiles`. Run
 `./install.sh --dry-run` again afterwards to include the new one.
 
+You do not need a profile manager such as `claude-profile`; the alias is
+enough. If you already use one, see the notes on `claude-profile` in
+[USAGE](docs/USAGE.md).
+
 ### Update
 
 ```bash
