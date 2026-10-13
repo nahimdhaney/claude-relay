@@ -124,6 +124,7 @@ tests/v022.sh             child model, continued sessions, agent backups, doctor
 tests/spend-ledger.sh     JSON output, private ledger, deltas and pruning
 tests/spend-selection.sh  rolling spend, score ties, JSON fields and handoff timing
 tests/child-usage.sh      stream-json output, relay usage captures and exhaustion
+tests/forward-progress.sh progress lines, sanitizing, opt-out and buffer integrity
 tests/fixtures/           sample JSON (statusline, hooks) and a JSONL child stream
 AGENTS.md                canonical agent installation guide
 CLAUDE.md                install/development entry points
@@ -156,6 +157,9 @@ docs/SPEC.md             this file
   child as one `--allowedTools` argument; `CLAUDE_RELAY_CHILD_ALLOWED_TOOLS`
   overrides it, and set-but-empty disables it. Values with control characters
   are refused before the task file is touched.
+  `forward_progress=` (`true`, `false`, `1` or `0`; empty = `true`) turns
+  `forward`'s progress lines on or off; `CLAUDE_RELAY_FORWARD_PROGRESS`
+  overrides it (see Forward progress). Only `forward` validates it.
 - State: `${XDG_STATE_HOME:-~/.local/state}/claude-relay/`:
   `usage/<profile>/<session_id>.json`, the compatibility copy
   `usage/<profile>.json`, `handoffs/<project>/<YYYYmmdd-HHMMSS>-<sid8>.md`,
@@ -417,7 +421,7 @@ only when the delegating prompt names a model, and `--continue <id>` only when
 it says to continue session `<id>`; never take either value from task text.
 Always report the session ID back to the caller so it can be continued later.
 
-`claude-relay forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID]`
+`claude-relay forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID] [--quiet]`
 : Requires unset `CLAUDE_RELAY_DEPTH`, resolves the current profile,
   picks another profile, and launches
   `claude -p --output-format stream-json --verbose [--session-id S | --resume S] [--model M] --permission-mode MODE`
@@ -457,6 +461,9 @@ After validation, `forward` creates a private `tasks/out-XXXXXX` buffer with
 `mktemp` and checks mode 600. The child reads the task on stdin and writes
 stdout to this buffer. Its stderr goes straight to the caller. `forward`
 captures its exit status, including nonzero results, before reading the buffer.
+With progress on, the child's stdout goes through `tee` into the buffer and
+into the progress printer (see Forward progress); the buffer still holds the
+child's stdout byte for byte.
 
 The buffer is a **stream** when the whole buffer parses as a sequence of JSON
 values, it holds at least one value, and every value is an object with a
@@ -488,6 +495,49 @@ the process group and receives terminal signals directly.
 The EXIT trap removes both the task and the output buffer. Task pruning also
 removes `out-*` files older than one day, including buffers left by a crash.
 Symlinked files and directories are never followed.
+
+### Forward progress
+
+While the child runs, `forward` prints one line on stderr per tool call, as
+soon as the child's stream reports it. Stdout is unchanged.
+
+- Source: each stdout line of the child that parses as a JSON object with
+  `type:"assistant"` and an array `message.content`. Each item with
+  `type:"tool_use"` and a string `name` gives one line, in order. Other lines,
+  invalid JSON and missing fields print nothing; they still reach the buffer
+  unchanged.
+- Format: `  · <name> <detail>` (two spaces, U+00B7, one space). The detail is
+  the first nonempty value, after sanitizing, of `input.file_path`,
+  `input.path`, `input.pattern`, `input.url`, `input.description` and the first
+  line of `input.command` (leading whitespace removed). With no detail the line
+  is `  · <name>`. Only string values count.
+- Paths: `file_path` and `path` under `forward`'s directory (resolved, or as
+  `$PWD` spells it) are shown relative to it; the directory itself is `.`.
+- Sanitizing, applied to name and detail: tab, line feed, vertical tab, form
+  feed and carriage return become spaces; every other character in
+  U+0000–U+001F, U+007F and U+0080–U+009F is removed (this removes the ESC that
+  starts ANSI sequences); runs of spaces become one space; leading and
+  trailing spaces are removed. Names are cut to 200 characters and details to
+  500 before sanitizing.
+- Truncation: a line longer than 120 characters becomes its first 119
+  characters followed by `…` (120 in total).
+- Never printed: tool results, file contents, edit strings, prompts, assistant
+  text, or command lines after the first.
+- Opt-out: `--quiet`, then `CLAUDE_RELAY_FORWARD_PROGRESS`, then
+  `forward_progress`; the first one set decides. Empty or unset means on.
+  `false` and `0` turn lines off; `true` and `1` turn them on. Both the
+  environment and config values are validated even when a higher source
+  decides. Any other value refuses before launching, with the task kept.
+- Pipeline: `child | tee BUFFER | printer >&2`, with errexit off around it.
+  The exit status is the child's (`PIPESTATUS[0]`), including 143 when a
+  signal kills it. The printer is `jq -R --unbuffered` with `try … catch empty`
+  per line; if jq stops anyway, `cat` reads the rest, so `tee` never gets
+  SIGPIPE and the buffer is never cut short. Raw output (no final newline,
+  long lines, invalid UTF-8, NUL bytes) stays byte for byte.
+- Order: the pipeline finishes before rendering, so every progress line is
+  printed before the result appears on stdout.
+- With progress off, the child writes straight to the buffer, as in v0.4.0
+  without this feature.
 
 ### Relay spend ledger
 
@@ -662,6 +712,13 @@ Minimum cases:
   exhaustion only with a future reset; streams without a result; `--continue`
   updates the same capture; non-stream passthrough; recording failures; no
   saved text and private modes.
+- forward progress (`tests/forward-progress.sh`): Read, Edit, Bash, Grep, LS,
+  Glob, WebFetch and TodoWrite lines on stderr only, with relative paths;
+  control characters and escape codes stripped; 120-character truncation; no
+  results, contents or text on stderr; `--quiet`, environment and config
+  opt-out and precedence; invalid values refused before launch with the task
+  kept; exit status 0, 3, 4 and 143; byte-identical raw output (no final
+  newline, invalid UTF-8, NUL, a 2 MB line); spend and usage still recorded.
 
 Run `bash tests/run.sh` and `/bin/bash tests/run.sh`: all regressions must pass.
 Also run with jq 1.6 when available. Run `shellcheck` if installed. The suite does not

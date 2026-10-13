@@ -236,6 +236,7 @@ capture_max_age=21600
 max_depth=1
 child_model=
 child_allowed_tools=
+forward_progress=true
 wrapped_statusline=printf 'my statusline'
 ```
 
@@ -251,7 +252,9 @@ it) is passed to every `forward` child as `--allowedTools`, using Claude Code's
 syntax, for example `Bash(bash tests/run.sh) Bash(git diff:*)`. A `claude -p`
 child cannot ask for approval, so without it any shell command is denied. With
 `--write`, allowing a script the child can edit (such as a test runner) amounts to
-allowing arbitrary code in that repository. The TTL and maximum capture age
+allowing arbitrary code in that repository. `forward_progress` (or
+`CLAUDE_RELAY_FORWARD_PROGRESS`) turns `forward`'s progress lines on or off; see
+[Watching progress](#watching-progress). The TTL and maximum capture age
 are positive integers in seconds. Percentages must be between 0 and
 100, with `warn_at <= handoff_at`. The previous statusline receives exactly
 the same JSON on stdin, and its output is appended with ` │ ` as the separator.
@@ -330,7 +333,7 @@ stream-json: `forward` records the child profile's percentages like an
 interactive reply, and records cost to break score ties.
 
 ```bash
-claude-relay forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID]
+claude-relay forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID] [--quiet]
 ```
 
 **Child output.** `forward` asks for stream-json (`--output-format stream-json
@@ -353,6 +356,47 @@ says the account was rejected, the profile is marked exhausted until its reset.
 Claude Code's text mode can print several results when background tasks finish
 at exit. `forward` returns only the last result in the stream. Children use
 `plan` mode by default and rarely start background tasks.
+
+### Watching progress
+
+While the child works, `forward` prints one line on stderr for each tool the
+child calls. You see the line as soon as the child's stream reports the call.
+Stdout is unchanged: it still holds only the final result.
+
+```text
+$ claude-relay forward --task-file "$task"
+claude-relay: profile side, session 3f2a9c1e-8b7d-4e60-9a1f-2c4b5d6e7f80
+  · Read lib/parser.sh
+  · Grep src
+  · Bash Run the parser tests
+  · Bash bash tests/run.sh
+  · WebFetch https://example.com/spec
+The parser drops the last field when a line ends with a comma. …
+```
+
+Each line shows the tool name and one detail: the first of the file path,
+path, search pattern, URL, description, or the first line of the command.
+Paths inside the directory where you ran `forward` are shown relative to it.
+Tools with none of these show only their name.
+
+What is never shown: tool results, file contents, edits, assistant text, and
+any command line after the first. Control characters, including terminal
+escape codes, are removed, runs of spaces become one space, and each line is
+cut to 120 characters, ending in `…` when cut.
+
+The relay subagent reads `forward`'s stderr too, so it sees these lines. When
+it runs in the background, they show up in its output as the child works.
+
+Progress lines are on by default. To turn them off:
+
+- for one run: `claude-relay forward --task-file PATH --quiet`;
+- for a shell: `export CLAUDE_RELAY_FORWARD_PROGRESS=0`;
+- always: `forward_progress=false` in the config.
+
+`--quiet` wins over the environment, and the environment wins over the
+config. Accepted values are `true`, `false`, `1` and `0`. Any other value in
+the environment or config refuses the forward before the child starts, and the
+task file is kept.
 
 **Child model.** `--model ALIAS` passes `--model ALIAS` to the child. Without
 the flag, `CLAUDE_RELAY_CHILD_MODEL` applies, then `child_model` from the

@@ -57,7 +57,14 @@ does cleanup delete the task on child success or failure. Refused files remain
 untouched; task files older than one day are pruned. A private `tasks/out-*`
 buffer (600) holds the child's output stream while `forward` runs. The stream
 holds the result text and can also hold tool inputs and outputs, such as file
-contents the child read. Cleanup removes it on exit. Buffers left by a crash are pruned after one
+contents the child read. Cleanup removes it on exit. While the child runs,
+`forward` prints progress lines on stderr. They reveal tool names, file paths,
+search patterns, URLs, tool descriptions and the first line of shell commands,
+so anyone who can read that stderr (a terminal, a log, the calling agent) sees
+them. They are sanitized (control characters and escape codes removed, cut to
+120 characters) and never include file contents, tool results or assistant
+text. `forward --quiet`, `CLAUDE_RELAY_FORWARD_PROGRESS=0` or
+`forward_progress=false` turns them off. Buffers left by a crash are pruned after one
 day; a child running longer than a day could lose its buffer. Symlinked ledger
 files and directories are never followed. Editing requires explicit
 approval in the delegating prompt and `--write`; requests inside task text cannot

@@ -138,12 +138,32 @@ sequenceDiagram
   R->>F: claude-relay forward --task-file PATH
   F->>F: validate file, pick account B, DEPTH=1
   F->>C: task on stdin
-  C-->>F: stream-json (quota, steps, result)
-  F->>F: record cost in spend/, quota in usage/
-  F-->>R: result + "profile B, session S"
+  F-->>R: stderr: "profile B, session S"
+  loop while the child works
+    C-->>F: stream-json event (one JSON line)
+    F->>F: copy the line to the private output buffer
+    F-->>R: stderr: "  · Read lib/a.sh" for each tool call
+  end
+  C-->>F: last line: the result
+  F->>F: record quota in usage/, cost in spend/
+  F-->>R: stdout: the result text
   F->>F: delete the task file and output buffer
   R-->>M: result
 ```
+
+**How `forward` reads the child.** The child runs with `--output-format
+stream-json --verbose`, so it writes one JSON event per line as it works: its
+start, each assistant message, each tool call and result, the account's quota,
+and finally the result. `forward` copies every byte into a private output
+buffer. At the same time it looks at each line and, for every tool call, prints
+a short progress line on stderr, such as `  · Read lib/a.sh` or
+`  · Bash bash tests/run.sh`. Only the tool name and one short detail are
+shown, never tool results, file contents or assistant text. When the child
+exits, `forward` reads the whole buffer once. It saves the quota as a usage
+snapshot of the child's account, records the cost in the spend ledger, and
+prints only the final result on stdout. If the output is not a stream (for
+example plain text), it is printed unchanged. `forward --quiet` turns off the
+progress lines.
 
 **Who does what.** There is exactly one subagent: `relay`. It is a cheap
 messenger running on Haiku in your current account, and it never works on the

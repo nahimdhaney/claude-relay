@@ -109,6 +109,19 @@ To delegate a task to another account, ask your agent:
 Use the relay agent to have another account review lib/parser.sh for bugs.
 ```
 
+While the other account works, `forward` shows each tool it uses on stderr,
+then prints the answer:
+
+```text
+claude-relay: profile side, session 3f2a9c1e-8b7d-4e60-9a1f-2c4b5d6e7f80
+  · Read lib/parser.sh
+  · Grep src
+  · Bash bash tests/run.sh
+The parser drops the last field when a line ends with a comma. …
+```
+
+Add `--quiet` to `forward` to hide these lines.
+
 ## Good to know
 
 - The installed hooks run from the folder you cloned. Keep it where only you can
