@@ -1,4 +1,4 @@
-# claude-relay — specification v0.2.2
+# claude-relay — specification v0.3.0
 
 A tool for using multiple Claude Code accounts (profiles with different
 `CLAUDE_CONFIG_DIR` values) without losing work when one runs out of quota:
@@ -59,7 +59,11 @@ Live observations from 2026-10-12 with Claude Code 2.1.296 are included below.
   `ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
   CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
   ANTHROPIC_BASE_URL`.
-- `claude -p` (headless) does not run the statusline: its usage is not measured.
+- `claude -p` (headless) does not run the statusline, so it reports no quota
+  percentages. `forward` records its reported cost to break score ties.
+- With `--output-format json`, Claude Code 2.1.296 returns one result object.
+  Its `total_cost_usd` and `modelUsage` counters are cumulative for the session,
+  including on `--resume`. Relay subtracts the last totals it recorded.
 - An already exhausted account never gets a successful response or a
   measurement; it needs an exhaustion mark independent of `rate_limits`.
 - The first interactive launch in a new folder shows the workspace trust prompt.
@@ -67,9 +71,10 @@ Live observations from 2026-10-12 with Claude Code 2.1.296 are included below.
   `run` and `resume` remove that marker along with `CLAUDECODE`.
 - `forward` relies on the CLI flags `--session-id <uuid>` (start a session with
   a caller-chosen ID), `--resume <id>` (continue it with a new `-p` prompt from
-  the same cwd and profile) and `--model <alias>`, instead of parsing
-  structured output. The suite checks only the argv passed to a fake binary;
-  continuing a forwarded session with real Claude Code needs a manual check.
+  the same cwd and profile) and `--model <alias>`. It reads JSON output for
+  result text and spend, but keeps its own validated profile and session ID.
+  The suite uses a fake binary; continuing a forwarded session with real
+  Claude Code still needs a manual check.
 - Each profile reads its own `<config_dir>/CLAUDE.md`, so a forwarded child
   may follow different user instructions than its caller.
 
@@ -86,7 +91,8 @@ Live observations from 2026-10-12 with Claude Code 2.1.296 are included below.
   the complete `.claude.json`). Only read `oauthAccount.emailAddress` and
   `oauthAccount.organizationName` from `.claude.json` for `status` and `detect`.
 - Files containing transcripts or handoffs: `umask 077`, mode 600/700.
-- Atomic writes (temporary file + `mv`).
+- Atomic writes (temporary file + `mv`, or an exclusive hard link for ledger
+  records).
 - No hook or statusline may break the session: on any error, exit 0 with no
   output. Require one JSON object before side effects or wrapper execution.
 - Never evaluate event/transcript/account data as shell code. The saved
@@ -108,6 +114,8 @@ tests/exhaustion-and-hooks.sh           exhaustion, hook and launch regressions
 tests/captures-and-migration.sh           multi-session captures and installation migration
 tests/release.sh          discovery, upgrades, forwarding and boundary regressions
 tests/v022.sh             child model, continued sessions, agent backups, doctor note
+tests/spend-ledger.sh     JSON output, private ledger, deltas and pruning
+tests/spend-selection.sh  rolling spend, score ties, JSON fields and handoff timing
 tests/fixtures/           sample JSON (statusline, hooks)
 AGENTS.md                canonical agent installation guide
 CLAUDE.md                install/development entry points
@@ -124,7 +132,8 @@ docs/SPEC.md             this file
 ## Configuration
 
 - Pool: `${XDG_CONFIG_HOME:-~/.config}/claude-relay/pool`, one
-  `name<TAB>config_dir` line per profile, `#` comments. Order = tie-break priority.
+  `name<TAB>config_dir` line per profile, `#` comments. Order is the final
+  tie-break after score and relay spend.
 - Options: `${XDG_CONFIG_HOME:-~/.config}/claude-relay/config` (`key=value`):
   `warn_at=90`, `handoff_at=97`, `unknown_score=50`, `exhausted_ttl=3600`,
   `capture_max_age=21600`, `max_depth=1`, `child_model=` (empty = the
@@ -144,7 +153,8 @@ docs/SPEC.md             this file
   `usage/<profile>.json`, `handoffs/<project>/<YYYYmmdd-HHMMSS>-<sid8>.md`,
   `last-handoff.json`, `warned/<profile>-<sid>-<level>-<resets_at>`,
   `exhausted/<profile>.json`, `events.log`, `tasks/`,
-  `forwarded/<session_id>.json` (see `forward`) and
+  `forwarded/<session_id>.json` (see `forward`),
+  `spend/<profile>/<session>-<epoch>-<random>.json` (see Relay spend ledger), and
   `backups/relay.md.relay-backup-<ts>.<suffix>` (agent backups, see `install`).
 - Current profile = the pool name whose `config_dir` matches (resolved path)
   `${CLAUDE_CONFIG_DIR:-~/.claude}`. If none matches, it is outside the pool.
@@ -190,13 +200,22 @@ its score as below.
   whose `resets_at` has passed is ignored ("no data"). With an active exhaustion
   mark, show "exhausted until HH:MM" (local time). JSON includes `exhausted:true`,
   `exhausted_until` and `score:100`; without an active mark, it includes
-  `exhausted:false` and the normal usage score.
+  `exhausted:false` and the normal usage score. Each JSON row also includes
+  `relay_spend_5h` (see Relay spend ledger). The text table is unchanged.
 
 `claude-relay pick [--exclude P]... [--json]`
 : Print the best profile's name. Score = maximum `used_percentage` of active
   windows; no active windows = `unknown_score`. Exclude profiles with scores
   >= `handoff_at` and profiles whose config_dir does not exist. Lowest score
-  wins; ties → pool order. No candidates → exit 3 and a message on stderr.
+  wins. Among profiles tied for that score, compare the last 5 hours of relay
+  spend. If all tied profiles have complete costs, prefer the least cost,
+  then the fewest runs. If any has an unknown cost, prefer the fewest runs,
+  then the least cost. Remaining ties go to pool order. JSON includes
+  `relay_spend_5h`. No candidates → exit 3 and a message on stderr.
+
+  This order also applies to `forward`, `run --pick` and automatic handoff
+  targets. Spend never changes a score. A measured 30 beats an unknown 50;
+  an unknown 50 with relay spend still beats a measured 60.
 
 `claude-relay exhausted <profile> [--for DURATION | --until EPOCH] [--clear]`
 : Atomically write `exhausted/<profile>.json` (mode 600) =
@@ -372,7 +391,7 @@ its score as below.
   `Note: pool profiles read different CLAUDE.md instructions: <name>=<identity>, ...`,
   in pool order. The note is informational and never makes doctor fail.
 
-`claude-relay --version` reads `VERSION` (0.2.2); `claude-relay help [subcommand]`.
+`claude-relay --version` reads `VERSION` (0.3.0); `claude-relay help [subcommand]`.
 
 ## agents/relay.md
 
@@ -392,7 +411,7 @@ Always report the session ID back to the caller so it can be continued later.
 `claude-relay forward --task-file PATH [--write] [--model ALIAS] [--continue SESSION_ID]`
 : Requires unset `CLAUDE_RELAY_DEPTH`, resolves the current profile,
   picks another profile, and launches
-  `claude -p --output-format text [--session-id S | --resume S] [--model M] --permission-mode MODE`
+  `claude -p --output-format json [--session-id S | --resume S] [--model M] --permission-mode MODE`
   in that order, with `plan` mode (`acceptEdits` with `--write`). It rejects
   files outside the relay task directory, symlinks, nonregular files and files
   owned by another user. It sets mode 600 after validation. Cleanup is armed
@@ -423,6 +442,111 @@ Always report the session ID back to the caller so it can be continued later.
   Tell the user that the child receives only this complete task and that
   usage is charged to the selected account. Long tasks may use `run_in_background`.
 
+### Forward output
+
+After validation, `forward` creates a private `tasks/out-XXXXXX` buffer with
+`mktemp` and checks mode 600. The child reads the task on stdin and writes
+stdout to this buffer. Its stderr goes straight to the caller. `forward`
+captures its exit status, including nonzero results, before reading the buffer.
+
+An envelope is exactly one JSON value in the whole buffer. It must be an
+object with `type:"result"` and a boolean `is_error`. `result` is optional.
+
+- For an envelope, record spend first, even if the child reports an error or
+  exits nonzero. If `result` is a string, print it followed by one newline.
+  An empty string prints just that newline. If it is absent or not a string,
+  print no result text.
+- If `is_error` is true, also print
+  `claude-relay: the child reported an error (<subtype>).` on stderr.
+  Use `subtype` only when it is a nonempty string of lowercase ASCII letters
+  and underscores. Otherwise use `unknown`.
+- Anything else passes through byte for byte and records no spend. This
+  includes plain text, empty output, multiple JSON values, trailing garbage
+  and JSON with the wrong shape.
+
+Exit with the child's status, even if it disagrees with `is_error`. HUP, INT
+or TERM received by `forward` instead makes it exit 1 and clean up. While it
+is waiting for the child, this skips rendering and recording. The child shares
+the process group and receives terminal signals directly.
+
+The EXIT trap removes both the task and the output buffer. Task pruning also
+removes `out-*` files older than one day, including buffers left by a crash.
+Symlinked files and directories are never followed.
+
+### Relay spend ledger
+
+Each envelope creates one record under
+`~/.local/state/claude-relay/spend/<profile>/<session>-<epoch>-<random>.json`
+(or the configured XDG state directory). Directories are 700 and files 600.
+The random suffix comes from `mktemp`. A hard link publishes the file without
+overwriting an existing name; name allocation allows up to five attempts.
+
+```json
+{"profile":"personal","session_id":"00000000-0000-4000-8000-000000000000","at":1791842414,"cost_usd":0.0029,"is_error":false,"models":{"claude-haiku-5-5":{"in":2,"out":3,"cache_read":15327,"cache_write":13571}}}
+```
+
+`profile` and `session_id` come from `forward`'s validated values. `at` is an
+epoch timestamp. `is_error` comes from the envelope. Only these fields are
+stored. The ledger never stores task text, result text or permission denials.
+
+Normalize reported totals before writing:
+
+- Cost must be a finite number from 0 through 100000 USD. Other values become
+  `null`. Token counts must be finite numbers from 0 through 1e12; other values
+  become 0.
+- A non-object `modelUsage` becomes `{}`. Skip entries whose values are not
+  objects. Keep model names only when they are 1–128 ASCII letters, digits,
+  dots, underscores, colons, brackets or hyphens.
+- Map `inputTokens`, `outputTokens`, `cacheReadInputTokens` and
+  `cacheCreationInputTokens` to `in`, `out`, `cache_read` and `cache_write`.
+
+Each record holds the run's delta from the session's last reported totals.
+New sessions start at zero. For `--continue`, subtract each baseline field
+from its reported value. If the baseline is missing or invalid, or the reported
+value is lower, use the reported value as is. This can over-count once, but
+never gives a negative delta. An unknown cost stays `null`.
+
+After recording, replace `totals` in `forwarded/<session>.json` with
+`{"cost_usd":<number-or-null>,"models":{<model>:{in,out,cache_read,cache_write}}}`.
+Those session records retain their 30-day lifetime. Ledger files older than
+seven days are pruned before recording and during state pruning. State pruning
+runs at most once every ten minutes.
+
+Recording runs in a separate strict Bash worker, `__record-spend`. It checks
+the profile is in the pool, the session is a lowercase UUID, and the buffer is
+an owned regular `out-*` file directly inside `tasks/`, with mode 600. It
+rejects symlinks and never writes stdout. If it fails, `forward` prints
+`claude-relay: could not record relay spend.` on stderr. The result and child
+exit status stay unchanged.
+
+`relay_spend <profile>` returns `{"cost_usd":N,"runs":N,"complete":B}` for
+the rolling last 5 hours. It preselects regular files by mtime, with a 60-second
+margin, then reads them in one jq call. If parsing fails, it reads each file
+separately so a damaged file cannot hide valid ones. Symlinked files are
+skipped. A missing or symlinked ledger directory gives zero cost, zero runs
+and `complete:true`.
+
+A record counts only if it is an object with the matching profile, a finite
+`at` from `now-18000` through `now+60`, and a finite nonnegative cost or `null`.
+Sum the non-null costs and count all valid records. `complete` is false if
+any counted record has a null cost. Missing costs from older Claude Code
+versions still count as runs. Both `status --json` and `pick --json` expose
+this object as `relay_spend_5h`. Cost is a relative weight between accounts,
+not a bill: subscription plans do not charge per run.
+
+### Known forwarding limitations
+
+- Claude Code's text mode can print several results when background tasks
+  finish at exit. JSON mode keeps only the last result, so `forward` returns
+  only that one. Children use `plan` mode by default and rarely start such
+  tasks.
+- A child running for more than one day could lose its output buffer to stale
+  file pruning.
+- Simultaneous `--continue` runs for the same session can race when reading
+  and updating the shared totals baseline. Their deltas may be inaccurate.
+  Unique ledger files preserve each run's record, but baseline updates are
+  not serialized.
+
 ## Tests (tests/run.sh)
 
 Pure Bash with temporary `HOME`, `XDG_*` and config_dirs, and a fake `claude`
@@ -451,7 +575,8 @@ Minimum cases:
 - install: no refreshInterval; migration is backed up and idempotent;
   uninstall restores unrelated original statusline settings.
 - pick: lowest score wins; no active windows = 50; >= 97 is
-  excluded; `--exclude`; ties by order; no candidates → exit 3.
+  excluded; `--exclude`; ties by relay cost and runs, then pool order;
+  incomplete costs compare runs first; no candidates → exit 3.
 - guard: < 90 no output; 90 → soft warning once per session; 97 → strong warning
   with the handoff path; valid JSON with the correct `hookEventName`;
   outside the pool / broken JSON → exit 0 with no output.
@@ -480,8 +605,13 @@ Minimum cases:
   permissions, `last_used_at` update and 30-day pruning; agent backups in
   state and migration of legacy backups (symlinks stay); the doctor
   CLAUDE.md note absent when identities match and exactly once when they differ.
+- relay spend: exact output bytes and child status; private buffers and
+  cleanup; bounded numbers, model names and no saved text; cumulative deltas;
+  unique records; recording failures; seven-day pruning and the five-hour
+  window; malformed and symlinked files; JSON fields; the guard handoff path
+  with 300 ledger files per profile stays under 1.5 seconds.
 
-Run `bash tests/run.sh` and `/bin/bash tests/run.sh`: the previous 247 tests (adapted only for requested behavior changes) plus
-new regressions must pass. Run `shellcheck` if installed. The suite does not
+Run `bash tests/run.sh` and `/bin/bash tests/run.sh`: all regressions must pass.
+Also run with jq 1.6 when available. Run `shellcheck` if installed. The suite does not
 verify real Claude, trust prompts or headless statusline execution; those
 observations come from manual tests.

@@ -112,8 +112,9 @@ is done, prints the result and exits.
   script the child can edit is close to allowing anything in that repository.
 - **Sessions:** the child's conversation is saved like any other, so it can be
   resumed later with `--resume <session-id>`.
-- **Not measured:** the statusline does not run, so claude-relay cannot see how
-  much quota a `claude -p` run used.
+- **Not measured as a percentage:** the statusline does not run, but `forward`
+  records each run's cost and uses it to break ties between accounts with equal
+  scores.
 
 ## Relay: forwarding a task
 
@@ -130,9 +131,10 @@ sequenceDiagram
   R->>F: claude-relay forward --task-file PATH
   F->>F: validate file, pick account B, DEPTH=1
   F->>C: task on stdin
-  C-->>F: result text
+  C-->>F: JSON result (text, cost)
+  F->>F: record cost in spend/
   F-->>R: result + "profile B, session S"
-  F->>F: delete the task file
+  F->>F: delete the task file and output buffer
   R-->>M: result
 ```
 
@@ -241,7 +243,9 @@ server.
 | `handoffs/<project>/*.md` | Handoff summaries written by the model at 97 % | Until you delete them |
 | `last-handoff.json` | Which session moved from which profile to which | Replaced on every handoff |
 | `tasks/task-*.txt` | Relay tasks in transit | Deleted after forwarding; stale ones after a day |
-| `forwarded/<session>.json` | Child sessions created by `forward` (for `--continue`) | Pruned after 30 days without use |
+| `tasks/out-*` | The child's output while `forward` runs | Deleted when `forward` ends; stale ones after a day |
+| `spend/<profile>/*.json` | Cost and token counts of each relay run; never text | 7 days |
+| `forwarded/<session>.json` | Child sessions and cumulative totals (for `--continue`) | Pruned after 30 days without use |
 | `events.log` | One line per turn that failed, with only the error type, truncated | Until you delete it |
 | `backups/` | Copies of files the installer replaced | Until you delete them |
 
