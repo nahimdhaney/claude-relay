@@ -162,15 +162,23 @@ Normalization rules, applied before anything is written:
 
 ### Writing without errexit
 
-Recording must not change `forward`'s output or exit status, so it is called
-as `record_spend ... || warn`. Inside an `||` context Bash disables errexit,
-which would let a failed check fall through to the rename. Therefore
-`record_spend`, and the helpers it calls, check every step explicitly
-(`private_dir`, building the JSON, validating it, `chmod 600`, verifying the
-mode, the final `mv`) and `return 1` on the first failure. `atomic_json` gets
-the same explicit checks, which also hardens its other callers. Updating
-`forwarded/<session>.json` `totals` follows the same rule. A failure prints
-`claude-relay: could not record relay spend: <reason>` to stderr.
+Recording must not change `forward`'s output or exit status, so `forward`
+calls it as `"$BASH" "$RELAY_BIN" __record-spend <profile> <session> <buffer>
+>&2 || warn`. Inside an `||` context Bash disables errexit for in-process code,
+which would let a failed check fall through to the rename. A separate Bash
+process (the same technique as the existing `__safe` worker) starts with
+`set -euo pipefail` intact, so every step (`private_dir`, building and
+validating the JSON, `chmod 600`, the final link) stops the worker on its
+first failure. The worker re-validates its arguments: the profile must be in
+the pool, the session a lowercase UUID, and the buffer an owned regular
+`out-*` file directly inside the tasks directory. It never writes to stdout.
+It also updates `totals` in `forwarded/<session>.json`. When the worker fails,
+`forward` prints `claude-relay: could not record relay spend.` to stderr, and
+its output and exit status stay the same.
+
+The record is written to a temporary file in the same directory and then
+hard-linked (`ln`, which never overwrites) to its final name. On a name
+collision the worker retries with a new random suffix, up to 5 times.
 
 ### Pruning
 
@@ -271,8 +279,8 @@ Cases:
    cumulative totals records reported − baseline. A missing baseline and a
    reported value below the baseline record the reported value. `totals` is
    updated after each run.
-8. Unique files: two records for the same session in the same second (forced
-   epoch) both survive.
+8. Unique files: two back-to-back records for the same session both survive,
+   and so do two concurrent `forward` runs to the same profile.
 9. Recording failure (spend directory replaced by a symlink, or an unwritable
    directory) prints the warning, and the child's stdout and status are
    unchanged.
@@ -286,8 +294,8 @@ Cases:
     days are pruned by `forward` and by `prune_state`.
 13. Damaged and symlinked ledger files are ignored without hiding valid ones.
 14. Buffer cleanup: a stale `out-*` older than a day is pruned, and a fresh
-    one is kept. After an interrupted `forward` (TERM), no task or buffer is
-    left and nothing is recorded.
+    one is kept. When the child is killed by a signal (the fake runs
+    `kill -TERM $$`), `forward` exits 143 and leaves no task or buffer behind.
 15. `status --json` and `pick --json` include `relay_spend_5h`.
 16. Benchmark: the guard handoff path with 3 profiles and 300 ledger files each
     (mostly older than 5 h) stays under 1.5 s. The existing 300 ms guard test is
